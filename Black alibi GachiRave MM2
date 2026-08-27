@@ -1,6 +1,6 @@
 -- ============================================================
--- Black Alibi GachiRave | stable release
--- version : 1.0.0
+-- Black Alibi MM2 | stable release
+-- version : 1.0.1
 -- author  : by GachiRave
 -- target  : Murder Mystery 2
 --
@@ -10,11 +10,39 @@
 --   3. equipment, only as a silent fallback
 -- hero is layered on top: the round's sheriff is remembered from the
 -- data, and any other player holding the gun afterwards is painted Hero
+--
+-- ============================================================
+-- CHANGELOG 1.0.1
+-- ============================================================
+-- ADDED
+--   Prediction Aimbot tracks the murderer's body and calculates horizontal
+--   lead from distance, network latency and smoothed assembly velocity.
+--   Vertical lead is handled separately and capped to one stud, so a jumping
+--   target cannot drag the crosshair several metres into the air.
+--
+--   Kill All in the murderer panel. One sweep over every living player
+--   instead of waiting for them to walk into aura range.
+--
+--   Auto Grab Gun on the Extra tab. Watches for the drop and collects it
+--   automatically, then returns you to the spot you were standing on.
+--
+-- FIXED
+--   Kill Aura range was never written into a config. Saving a preset kept
+--   the toggles but the slider always came back as 12. The number is part
+--   of the snapshot now and is restored on load.
+--
+--   Line of sight could still approve a target behind thin or one sided
+--   geometry, so the aim sometimes locked through a wall. The check now
+--   samples the head, torso and lower body, and any solid hit blocks it.
+--
+-- CHANGED
+--   Renamed from Black Alibi GachiRave to Black Alibi MM2.
+--   Page transitions, toggle feedback and notification motion reworked.
 -- ============================================================
 
 -- ============ config ============
-local SCRIPT_BRAND_NAME = "Black Alibi GachiRave"
-local SCRIPT_VERSION_TAG = "1.0.0"
+local SCRIPT_BRAND_NAME = "Black Alibi MM2"
+local SCRIPT_VERSION_TAG = "1.0.1"
 local SCRIPT_AUTHOR_LINE = "by GachiRave"
 local SCRIPT_RELEASE_STATUS = "STABLE RELEASE"
 local TARGET_GAME_TITLE = "Murder Mystery 2"
@@ -37,8 +65,18 @@ local TextService = game:GetService("TextService")
 
 local LocalPlayer = PlayersService.LocalPlayer
 
+-- Mobile executors do not all expose CoreGui in the same way. Prefer their
+-- protected UI container when available, then fall back to CoreGui.
+local InterfaceParent = CoreGuiService
+if type(gethui) == "function" then
+    local ContainerSucceeded, ProtectedContainer = pcall(gethui)
+    if ContainerSucceeded and ProtectedContainer then
+        InterfaceParent = ProtectedContainer
+    end
+end
+
 -- wipe any older copy before building a new one
-local PreviousGui = CoreGuiService:FindFirstChild("BlackAlibiCore")
+local PreviousGui = InterfaceParent:FindFirstChild("BlackAlibiCore")
 if PreviousGui then
     PreviousGui:Destroy()
 end
@@ -104,7 +142,16 @@ RootGui.Name = "BlackAlibiCore"
 RootGui.ResetOnSpawn = false
 RootGui.IgnoreGuiInset = true
 RootGui.DisplayOrder = 500
-RootGui.Parent = CoreGuiService
+RootGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+RootGui.Enabled = true
+
+local ParentSucceeded = pcall(function()
+    RootGui.Parent = InterfaceParent
+end)
+if not ParentSucceeded or not RootGui.Parent then
+    -- Last resort for executors that expose CoreGui but reject direct writes.
+    RootGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
 
 local DimLayer = Instance.new("Frame")
 DimLayer.Name = "DimLayer"
@@ -184,6 +231,7 @@ MainWindow.BackgroundColor3 = Palette.Window
 MainWindow.BorderSizePixel = 0
 MainWindow.GroupTransparency = 1
 MainWindow.Active = true
+MainWindow.Visible = true
 MainWindow.ZIndex = 2
 MainWindow.Parent = RootGui
 AddCorner(MainWindow, 10)
@@ -191,7 +239,7 @@ AddStroke(MainWindow, Palette.Stroke, 0.3)
 MakeDraggable(MainWindow)
 
 local WindowScale = Instance.new("UIScale")
-WindowScale.Scale = 0.96
+WindowScale.Scale = 0.97
 WindowScale.Parent = MainWindow
 
 -- If a secondary module errors during construction, do not leave a fully
@@ -230,12 +278,15 @@ BrandLabel.Parent = Header
 
 -- TextBounds is often zero during the first render frame. TextService gives
 -- us the real width immediately, so the version can never cover "MM2".
-local BrandTextWidth = TextService:GetTextSize(
-    SCRIPT_BRAND_NAME,
-    BrandLabel.TextSize,
-    BrandLabel.Font,
-    Vector2.new(1000, HEADER_HEIGHT)
-).X
+local BrandTextWidth = 120
+pcall(function()
+    BrandTextWidth = TextService:GetTextSize(
+        SCRIPT_BRAND_NAME,
+        BrandLabel.TextSize,
+        BrandLabel.Font,
+        Vector2.new(1000, HEADER_HEIGHT)
+    ).X
+end)
 
 local VersionChip = Instance.new("TextLabel")
 VersionChip.Name = "VersionChip"
@@ -399,9 +450,17 @@ local GetGunAnchorPart
 local RunGrabGun
 local ShowNotification
 local SetTeleportStatus
+local CreatePageButton
 
 -- combat needs the role table, which the role engine builds much later
 local GetRoleOfPlayer
+local CleanupRoleEsp
+local StartRoleEngine
+
+-- auto grab lives on the Extra tab but the grab routine is defined with the
+-- gun module, so both sides meet through these
+local AutoGrabGunEnabled = false
+local TryAutoGrabGun
 
 local ActiveTabButton = TabEsp
 local ActivePage = PageEsp
@@ -411,7 +470,8 @@ PageEsp.GroupTransparency = 0
 -- page transition, rebuilt.
 -- the outgoing page is cut instantly and only the incoming one animates:
 -- a short slide from the right plus a fade.
-local PageSlideIn = TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local PageSlideIn = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+local TabIndicatorTween = TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 local PageRestPosition = UDim2.new(0, SIDEBAR_WIDTH, 0, HEADER_HEIGHT + 1)
 
 local function SwitchTab(TargetButton, TargetPage)
@@ -430,7 +490,7 @@ local function SwitchTab(TargetButton, TargetPage)
     end
 
     -- indicator rides to the new tab
-    Animate(TabIndicator, PageSlideIn, {
+    Animate(TabIndicator, TabIndicatorTween, {
         Position = UDim2.new(0, 0, 0, TargetButton.AbsolutePosition.Y - Sidebar.AbsolutePosition.Y + (TargetButton.AbsoluteSize.Y / 2))
     })
 
@@ -439,7 +499,7 @@ local function SwitchTab(TargetButton, TargetPage)
     end
     ActivePage = TargetPage
 
-    TargetPage.Position = PageRestPosition + UDim2.fromOffset(14, 0)
+    TargetPage.Position = PageRestPosition + UDim2.fromOffset(10, 0)
     TargetPage.GroupTransparency = 1
     TargetPage.Visible = true
 
@@ -455,6 +515,12 @@ TabExtra.Activated:Connect(function() SwitchTab(TabExtra, PageExtra) end)
 TabAuthor.Activated:Connect(function() SwitchTab(TabAuthor, PageAuthor) end)
 TabSettings.Activated:Connect(function() SwitchTab(TabSettings, PageSettings) end)
 Animate(TabEsp, TweenFast, {BackgroundTransparency = 0, TextColor3 = Palette.TextMain})
+
+-- Show the shell before optional modules are built. A failure in an executor
+-- specific feature can no longer keep the entire interface invisible.
+SetBackdrop(true)
+Animate(MainWindow, TweenSlow, {GroupTransparency = 0})
+Animate(WindowScale, TweenSlow, {Scale = 1})
 
 -- ============ esp page ============
 local EspTitle = Instance.new("TextLabel")
@@ -557,6 +623,22 @@ end
 
 -- every toggle setter lives in one table instead of one local each
 local Setters = {}
+local Builders = {}
+
+local function RunBuilder(BuilderName)
+    local BuilderFunction = Builders[BuilderName]
+    if not BuilderFunction then
+        warn("[Black Alibi] Missing builder: " .. tostring(BuilderName))
+        return false
+    end
+
+    local BuilderSucceeded, BuilderError = pcall(BuilderFunction)
+    if not BuilderSucceeded then
+        warn("[Black Alibi] " .. tostring(BuilderName) .. " failed: " .. tostring(BuilderError))
+        return false
+    end
+    return true
+end
 
 -- filled later by the role engine
 local ApplyHighlightState
@@ -587,7 +669,7 @@ end)
 local XRayEnabled = false
 local DisableXRay
 
-do
+Builders.XRay = function()
 local XRayOriginalTransparency = {}
 local XRayDescendantConnection = nil
 
@@ -666,6 +748,7 @@ Setters.XRay = CreateToggleRow(PageEsp, "X-RAY", 152, function(NewState)
     end
 end)
 end
+RunBuilder("XRay")
 
 -- where the roles are actually coming from right now
 local RoleSourceLabel = Instance.new("TextLabel")
@@ -933,7 +1016,7 @@ end)
 -- no polling loop: property signals only fire if MM2 tries to reset a value
 local DisconnectMovementConnections
 
-do
+Builders.Movement = function()
 local MovementConnections = {}
 
 DisconnectMovementConnections = function()
@@ -974,6 +1057,7 @@ if ExistingHumanoid then
     BindMovementEnforcement(ExistingHumanoid)
 end
 end
+RunBuilder("Movement")
 
 -- ---- noclip ----
 -- the connection exists only while the toggle is on, so nothing is stepped
@@ -981,7 +1065,7 @@ end
 local NoclipEnabled = false
 local StopNoclip
 
-do
+Builders.Noclip = function()
 local NoclipConnection = nil
 local NoclipDisabledParts = {}
 
@@ -1041,6 +1125,7 @@ Setters.Noclip = CreateToggleRow(PagePlayer, "NOCLIP", 152, function(NewState)
     end
 end)
 end
+RunBuilder("Noclip")
 
 -- ---- infinite jump ----
 -- JumpRequest already fires once per tap, so there is no loop to keep alive
@@ -1066,7 +1151,7 @@ end)
 local AntiFlingEnabled = false
 local ClearAntiFlingConnections
 
-do
+Builders.AntiFling = function()
 -- ANTI FLING, DONE PROPERLY.
 -- Clamping your own velocity was the wrong fix: a flinger works by ramming
 -- their own body into yours, so the push happens through collision before any
@@ -1158,6 +1243,7 @@ Setters.AntiFling = CreateToggleRow(PagePlayer, "ANTI FLING", 216, function(NewS
     end
 end)
 end
+RunBuilder("AntiFling")
 
 -- ---- slow spin ----
 -- Steady rotation in place. Uses the humanoid's own rotation channel so it
@@ -1165,7 +1251,7 @@ end
 local SpinEnabled = false
 local StopSpin
 
-do
+Builders.Spin = function()
 local SpinConnection = nil
 local SPIN_DEGREES_PER_SECOND = 60
 
@@ -1205,6 +1291,7 @@ Setters.SlowSpin = CreateToggleRow(PagePlayer, "SLOW SPIN", 248, function(NewSta
     end
 end)
 end
+RunBuilder("Spin")
 
 -- the camera is rebuilt on respawn, so the chosen zoom is stamped back on
 LocalPlayer.CharacterAdded:Connect(function()
@@ -1224,7 +1311,12 @@ local StopKillAura
 local StopAimbot
 local AimWallCheckEnabled = true
 
-do
+-- the range slider used to live entirely inside the combat block, so the
+-- config had no way to read or restore it. it is shared now.
+local KillAuraRange = 12
+local SetKillAuraRange
+
+Builders.Combat = function()
 local CombatTitle = Instance.new("TextLabel")
 CombatTitle.Size = UDim2.new(1, -28, 0, 20)
 CombatTitle.Position = UDim2.new(0, 14, 0, 10)
@@ -1342,13 +1434,11 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
 end
 
 -- ---------- murderer panel ----------
-local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 146)
-
-local KillAuraRange = 12
+local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 170)
 
 local RangeLabel = Instance.new("TextLabel")
 RangeLabel.Size = UDim2.new(1, -80, 0, 14)
-RangeLabel.Position = UDim2.new(0, 10, 0, 70)
+RangeLabel.Position = UDim2.new(0, 10, 0, 64)
 RangeLabel.BackgroundTransparency = 1
 RangeLabel.Text = "RANGE"
 RangeLabel.TextColor3 = Color3.fromRGB(196, 196, 206)
@@ -1361,7 +1451,7 @@ RangeLabel.Parent = MurdererPanel
 local RangeValueBox = Instance.new("TextBox")
 RangeValueBox.AnchorPoint = Vector2.new(1, 0)
 RangeValueBox.Size = UDim2.fromOffset(52, 20)
-RangeValueBox.Position = UDim2.new(1, -10, 0, 67)
+RangeValueBox.Position = UDim2.new(1, -10, 0, 61)
 RangeValueBox.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
 RangeValueBox.Text = tostring(KillAuraRange)
 RangeValueBox.TextColor3 = Palette.TextMain
@@ -1375,7 +1465,7 @@ AddStroke(RangeValueBox, Palette.Stroke, 0.45)
 
 local RangeTrack = Instance.new("Frame")
 RangeTrack.Size = UDim2.new(1, -20, 0, 6)
-RangeTrack.Position = UDim2.new(0, 10, 0, 92)
+RangeTrack.Position = UDim2.new(0, 10, 0, 86)
 RangeTrack.BackgroundColor3 = Color3.fromRGB(40, 40, 47)
 RangeTrack.BorderSizePixel = 0
 RangeTrack.ZIndex = 5
@@ -1455,6 +1545,11 @@ RangeValueBox.FocusLost:Connect(function()
     end
 end)
 
+-- hand the config system a way to replay a saved range
+SetKillAuraRange = function(NewValue)
+    CommitRange(NewValue, true)
+end
+
 -- the knife only registers on a real touch, so the aura fires the touch itself
 local KillAuraConnection = nil
 
@@ -1488,23 +1583,28 @@ local function TargetIsVisible(OriginPosition, TargetPart)
     RayParams.FilterDescendantsInstances = ExcludedInstances
     RayParams.IgnoreWater = true
 
-    local Direction = TargetPart.Position - OriginPosition
-    if Direction.Magnitude < 0.1 then
-        return true
+    -- A single ray to the centre used to slip past thin walls and one sided
+    -- geometry, which is why the aim still locked through cover sometimes.
+    -- Three samples down the body have to be clear before a target counts.
+    local SamplePoints = {
+        TargetPart.Position + Vector3.new(0, 1.4, 0),
+        TargetPart.Position,
+        TargetPart.Position - Vector3.new(0, 1.4, 0),
+    }
+
+    for _, SamplePosition in ipairs(SamplePoints) do
+        local Direction = SamplePosition - OriginPosition
+        if Direction.Magnitude >= 0.1 then
+            local RaycastSucceeded, Result = pcall(function()
+                return workspace:Raycast(OriginPosition, Direction, RayParams)
+            end)
+
+            if RaycastSucceeded and Result and Result.Instance and Result.Instance.CanCollide then
+                return false
+            end
+        end
     end
 
-    local RaycastSucceeded, Result = pcall(function()
-        return workspace:Raycast(OriginPosition, Direction, RayParams)
-    end)
-
-    if not RaycastSucceeded then
-        return true -- cannot verify, do not block the action
-    end
-
-    -- anything solid standing between the two points means no clear shot
-    if Result and Result.Instance and Result.Instance.CanCollide then
-        return false
-    end
     return true
 end
 
@@ -1584,17 +1684,125 @@ Setters.KillAura = CreatePanelToggle(MurdererPanel, "KILL AURA", 32, function(Ne
     end
 end)
 
-Setters.LegitMode = CreatePanelToggle(MurdererPanel, "LEGIT · NO WALL HITS", 112, function(NewState)
+Setters.LegitMode = CreatePanelToggle(MurdererPanel, "LEGIT · NO WALL HITS", 98, function(NewState)
     LegitModeEnabled = NewState
 end)
 
 -- legit protection is on by default, so reflect that immediately
 Setters.LegitMode(true)
 
--- ---------- sheriff panel ----------
-local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 186, 118)
+-- KILL ALL.
+-- The aura waits for people to walk into range. This does the opposite: it
+-- walks the knife to every living player one by one and puts you back where
+-- you started, so a whole lobby goes down in a single press.
+local KillAllRunning = false
 
-local AimbotConnection = nil
+local function RunKillAll()
+    if KillAllRunning then
+        return
+    end
+
+    local Knife = GetHeldKnife()
+    local Handle = Knife and Knife:FindFirstChild("Handle")
+    local TouchFunction = firetouchinterest or (syn and syn.firetouchinterest)
+
+    if not Handle or not TouchFunction then
+        ShowNotification("KILL ALL", "You need the knife equipped for this.", Color3.fromRGB(255, 72, 72))
+        return
+    end
+
+    local Character = LocalPlayer.Character
+    local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+    if not Character or not RootPart then
+        return
+    end
+
+    KillAllRunning = true
+
+    task.spawn(function()
+        local ReturnPivot = Character:GetPivot()
+        local KillCount = 0
+
+        for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+            if not CoreIsAlive or not KillAllRunning then
+                break
+            end
+
+            if OtherPlayer ~= LocalPlayer then
+                local OtherCharacter = OtherPlayer.Character
+                local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+                local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
+
+                if OtherRoot and OtherHumanoid and OtherHumanoid.Health > 0 then
+                    -- stand just behind them so the touch always registers
+                    Character:PivotTo(OtherRoot.CFrame * CFrame.new(0, 0, 2))
+                    task.wait(0.08)
+
+                    pcall(function()
+                        TouchFunction(OtherRoot, Handle, 0)
+                        TouchFunction(OtherRoot, Handle, 1)
+                    end)
+
+                    KillCount = KillCount + 1
+                    task.wait(0.1)
+                end
+            end
+        end
+
+        -- always go home, even if the sweep was cut short
+        if Character.Parent then
+            Character:PivotTo(ReturnPivot)
+            if RootPart.Parent then
+                RootPart.AssemblyLinearVelocity = Vector3.zero
+                RootPart.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+
+        KillAllRunning = false
+        ShowNotification("KILL ALL", "Swept " .. KillCount .. " players, back in place.", Color3.fromRGB(255, 72, 72))
+    end)
+end
+
+local KillAllButton = Instance.new("TextButton")
+KillAllButton.Size = UDim2.new(1, -20, 0, 30)
+KillAllButton.Position = UDim2.new(0, 10, 0, 134)
+KillAllButton.BackgroundColor3 = Color3.fromRGB(48, 26, 28)
+KillAllButton.Text = "KILL ALL"
+KillAllButton.TextColor3 = Color3.fromRGB(255, 120, 120)
+KillAllButton.Font = Enum.Font.Code
+KillAllButton.TextSize = 11
+KillAllButton.AutoButtonColor = false
+KillAllButton.ZIndex = 5
+KillAllButton.Parent = MurdererPanel
+AddCorner(KillAllButton, 6)
+local KillAllStroke = AddStroke(KillAllButton, Color3.fromRGB(255, 72, 72), 0.5)
+
+KillAllButton.MouseEnter:Connect(function()
+    Animate(KillAllButton, TweenFast, {BackgroundColor3 = Color3.fromRGB(74, 32, 34), TextColor3 = Color3.fromRGB(255, 180, 180)})
+    Animate(KillAllStroke, TweenFast, {Transparency = 0.15})
+end)
+KillAllButton.MouseLeave:Connect(function()
+    Animate(KillAllButton, TweenFast, {BackgroundColor3 = Color3.fromRGB(48, 26, 28), TextColor3 = Color3.fromRGB(255, 120, 120)})
+    Animate(KillAllStroke, TweenFast, {Transparency = 0.5})
+end)
+
+local KillAllScale = Instance.new("UIScale")
+KillAllScale.Parent = KillAllButton
+KillAllButton.InputBegan:Connect(function(Input)
+    if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+        Animate(KillAllScale, TweenFast, {Scale = 0.97})
+    end
+end)
+KillAllButton.InputEnded:Connect(function(Input)
+    if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+        Animate(KillAllScale, TweenFast, {Scale = 1})
+    end
+end)
+
+KillAllButton.Activated:Connect(RunKillAll)
+
+-- ---------- sheriff panel ----------
+local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 212, 92)
 
 -- the aim only makes sense with the revolver actually equipped: a gun sitting
 -- in the backpack is not drawn, so the camera must stay free until you hold it
@@ -1620,35 +1828,109 @@ local function FindMurdererTarget()
     for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
         if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == "Murderer" then
             local OtherCharacter = OtherPlayer.Character
-            local TargetPart = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+            local TargetRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+            local TargetPart = OtherCharacter and (
+                OtherCharacter:FindFirstChild("UpperTorso")
+                or OtherCharacter:FindFirstChild("Torso")
+                or TargetRoot
+            )
             local TargetHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
-            if TargetPart and TargetHumanoid and TargetHumanoid.Health > 0 then
-                return TargetPart
+            if TargetPart and TargetRoot and TargetHumanoid and TargetHumanoid.Health > 0 then
+                return OtherPlayer, TargetPart, TargetRoot, TargetHumanoid
             end
         end
     end
     return nil
 end
 
-StopAimbot = function()
-    if AimbotConnection then
-        AimbotConnection:Disconnect()
-        AimbotConnection = nil
+-- PREDICTION AIMBOT.
+-- MM2 shots are fast, so huge generic projectile prediction makes jumpers pull
+-- the camera into the ceiling. Horizontal and vertical motion are deliberately
+-- solved separately: horizontal lead is dynamic, vertical lead is short and
+-- capped. The velocity filter removes one-frame replication spikes.
+local AIM_RENDER_STEP_NAME = "BlackAlibiPredictionAimbot"
+local AIM_RESPONSE = 28
+local ASSUMED_SHOT_SPEED = 720
+local MAX_LEAD_TIME = 0.18
+local MAX_HORIZONTAL_LEAD = 6
+local MAX_VERTICAL_LEAD = 1
+local SmoothedVelocityByPlayer = setmetatable({}, {__mode = "k"})
+local CachedNetworkLatencySeconds = 0.04
+local LastNetworkLatencyUpdate = 0
+
+local function GetNetworkLatencySeconds()
+    local CurrentTime = os.clock()
+    if CurrentTime - LastNetworkLatencyUpdate < 1 then
+        return CachedNetworkLatencySeconds
     end
+    LastNetworkLatencyUpdate = CurrentTime
+
+    pcall(function()
+        local StatsService = game:GetService("Stats")
+        local NetworkStats = StatsService:FindFirstChild("Network")
+        local ServerStats = NetworkStats and NetworkStats:FindFirstChild("ServerStatsItem")
+        local DataPing = ServerStats and ServerStats:FindFirstChild("Data Ping")
+        if DataPing and DataPing.GetValue then
+            CachedNetworkLatencySeconds = math.clamp(DataPing:GetValue() / 1000, 0, 0.25)
+        end
+    end)
+
+    return CachedNetworkLatencySeconds
+end
+
+local function ClampHorizontalVector(VectorValue, MaximumLength)
+    local HorizontalVector = Vector3.new(VectorValue.X, 0, VectorValue.Z)
+    local HorizontalLength = HorizontalVector.Magnitude
+    if HorizontalLength > MaximumLength and HorizontalLength > 0 then
+        return HorizontalVector.Unit * MaximumLength
+    end
+    return HorizontalVector
+end
+
+local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, TargetHumanoid, DeltaTime)
+    local RawVelocity = TargetRoot.AssemblyLinearVelocity
+    local PreviousVelocity = SmoothedVelocityByPlayer[TargetPlayer] or RawVelocity
+
+    -- Stable across frame rates: roughly the same filter at 30, 60 and 120 FPS.
+    local VelocityBlend = 1 - math.exp(-10 * math.clamp(DeltaTime, 0, 0.1))
+    local SmoothedVelocity = PreviousVelocity:Lerp(RawVelocity, VelocityBlend)
+    SmoothedVelocityByPlayer[TargetPlayer] = SmoothedVelocity
+
+    local ActiveCamera = workspace.CurrentCamera
+    local CameraPosition = ActiveCamera and ActiveCamera.CFrame.Position or TargetPart.Position
+    local Distance = (TargetPart.Position - CameraPosition).Magnitude
+
+    -- Half the measured round-trip ping approximates one-way replication delay.
+    local LeadTime = math.clamp(
+        (Distance / ASSUMED_SHOT_SPEED) + (GetNetworkLatencySeconds() * 0.5),
+        0.015,
+        MAX_LEAD_TIME
+    )
+
+    local HorizontalVelocity = ClampHorizontalVector(SmoothedVelocity, 32)
+    local HorizontalLead = ClampHorizontalVector(HorizontalVelocity * LeadTime, MAX_HORIZONTAL_LEAD)
+
+    local VerticalLead = 0
+    if TargetHumanoid.FloorMaterial == Enum.Material.Air then
+        -- Only a small fraction of Y velocity is useful for MM2. Capping this
+        -- is what prevents the classic "aim five metres above a jumper" bug.
+        local VerticalTime = math.min(LeadTime, 0.09)
+        VerticalLead = math.clamp(SmoothedVelocity.Y * VerticalTime, -MAX_VERTICAL_LEAD, MAX_VERTICAL_LEAD)
+    end
+
+    return TargetPart.Position + HorizontalLead + Vector3.new(0, VerticalLead, 0)
+end
+
+StopAimbot = function()
+    AimbotEnabled = false
+    RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
 end
 
 local function StartAimbot()
-    if AimbotConnection then
-        return
-    end
+    RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
 
-    AimbotConnection = RunService.RenderStepped:Connect(function()
-        if not CoreIsAlive or not AimbotEnabled then
-            return
-        end
-
-        -- no revolver in hand means no aiming at all
-        if not GunIsEquipped() then
+    RunService:BindToRenderStep(AIM_RENDER_STEP_NAME, Enum.RenderPriority.Camera.Value + 1, function(DeltaTime)
+        if not CoreIsAlive or not AimbotEnabled or not GunIsEquipped() then
             return
         end
 
@@ -1657,23 +1939,30 @@ local function StartAimbot()
             return
         end
 
-        local TargetPart = FindMurdererTarget()
-        if not TargetPart then
+        local TargetPlayer, TargetPart, TargetRoot, TargetHumanoid = FindMurdererTarget()
+        if not TargetPlayer then
             return
         end
 
-        -- do not swing the camera at someone you cannot actually shoot.
-        -- the ray starts at the camera because that is where the shot comes from
         if AimWallCheckEnabled and not TargetIsVisible(ActiveCamera.CFrame.Position, TargetPart) then
             return
         end
 
-        -- aim at the body, exactly as asked, not the head
-        ActiveCamera.CFrame = CFrame.new(ActiveCamera.CFrame.Position, TargetPart.Position)
+        local PredictedPosition = GetPredictedBodyPosition(
+            TargetPlayer,
+            TargetPart,
+            TargetRoot,
+            TargetHumanoid,
+            DeltaTime
+        )
+
+        local DesiredCameraCFrame = CFrame.new(ActiveCamera.CFrame.Position, PredictedPosition)
+        local AimAlpha = 1 - math.exp(-AIM_RESPONSE * math.clamp(DeltaTime, 0, 0.1))
+        ActiveCamera.CFrame = ActiveCamera.CFrame:Lerp(DesiredCameraCFrame, AimAlpha)
     end)
 end
 
-Setters.Aimbot = CreatePanelToggle(SheriffPanel, "AIMBOT · LOCK BODY", 32, function(NewState)
+Setters.Aimbot = CreatePanelToggle(SheriffPanel, "PREDICTION AIMBOT · MOBILE LOCK", 25, function(NewState)
     AimbotEnabled = NewState
     if NewState then
         StartAimbot()
@@ -1682,30 +1971,18 @@ Setters.Aimbot = CreatePanelToggle(SheriffPanel, "AIMBOT · LOCK BODY", 32, func
     end
 end)
 
-Setters.AimWallCheck = CreatePanelToggle(SheriffPanel, "LEGIT · NO WALL AIM", 66, function(NewState)
+Setters.AimWallCheck = CreatePanelToggle(SheriffPanel, "LEGIT · NO WALL AIM", 57, function(NewState)
     AimWallCheckEnabled = NewState
 end)
 
 -- wall protection starts on, same as the murderer side
 Setters.AimWallCheck(true)
 
--- phones have no mouse to steer with, so the note belongs right here
-local AimbotPhoneNote = Instance.new("TextLabel")
-AimbotPhoneNote.Size = UDim2.new(1, -20, 0, 12)
-AimbotPhoneNote.Position = UDim2.new(0, 10, 0, 100)
-AimbotPhoneNote.BackgroundTransparency = 1
-AimbotPhoneNote.Text = "Needs the gun in hand · mobile: camera lock"
-AimbotPhoneNote.TextColor3 = Color3.fromRGB(120, 160, 230)
-AimbotPhoneNote.Font = Enum.Font.Code
-AimbotPhoneNote.TextSize = 10
-AimbotPhoneNote.TextXAlignment = Enum.TextXAlignment.Left
-AimbotPhoneNote.ZIndex = 5
-AimbotPhoneNote.Parent = SheriffPanel
-
 end
+RunBuilder("Combat")
 
 -- ============ extra page ============
-do
+Builders.Extra = function()
 local ExtraTitle = Instance.new("TextLabel")
 ExtraTitle.Size = UDim2.new(1, -28, 0, 20)
 ExtraTitle.Position = UDim2.new(0, 14, 0, 12)
@@ -1718,35 +1995,49 @@ ExtraTitle.TextXAlignment = Enum.TextXAlignment.Left
 ExtraTitle.ZIndex = 4
 ExtraTitle.Parent = PageExtra
 
-local ExtraPill = Instance.new("TextLabel")
-ExtraPill.Size = UDim2.fromOffset(150, 20)
-ExtraPill.Position = UDim2.new(0, 14, 0, 42)
-ExtraPill.BackgroundColor3 = Palette.AccentSoft
-ExtraPill.Text = "IN DEVELOPMENT"
-ExtraPill.TextColor3 = Color3.fromRGB(111, 161, 255)
-ExtraPill.Font = Enum.Font.Code
-ExtraPill.TextSize = 11
-ExtraPill.ZIndex = 4
-ExtraPill.Parent = PageExtra
-AddCorner(ExtraPill, 10)
-AddStroke(ExtraPill, Palette.Accent, 0.45)
+-- AUTO GRAB GUN.
+-- Watches for the revolver hitting the ground and collects it without you
+-- having to open the teleport tab. Reuses the same grab routine, so the
+-- return to your original spot and the physics cleanup come along with it.
+Setters.AutoGrabGun = CreateToggleRow(PageExtra, "AUTO GRAB GUN", 40, function(NewState)
+    AutoGrabGunEnabled = NewState
+    if NewState and TryAutoGrabGun then
+        TryAutoGrabGun() -- the gun might already be lying there
+    end
+end)
 
 local ExtraBody = Instance.new("TextLabel")
-ExtraBody.Size = UDim2.new(1, -28, 0, 60)
-ExtraBody.Position = UDim2.new(0, 14, 0, 72)
+ExtraBody.Size = UDim2.new(1, -28, 0, 44)
+ExtraBody.Position = UDim2.new(0, 14, 0, 80)
 ExtraBody.BackgroundTransparency = 1
-ExtraBody.Text = "Reserved for the next batch of tools. Nothing is wired up here yet."
+ExtraBody.Text = "Picks the revolver up the moment it drops and puts you back where you were standing."
 ExtraBody.TextColor3 = Palette.TextFaint
 ExtraBody.Font = Enum.Font.Code
-ExtraBody.TextSize = 11
+ExtraBody.TextSize = 10
 ExtraBody.TextWrapped = true
 ExtraBody.TextXAlignment = Enum.TextXAlignment.Left
 ExtraBody.TextYAlignment = Enum.TextYAlignment.Top
 ExtraBody.ZIndex = 4
 ExtraBody.Parent = PageExtra
+
+local ExtraPill = Instance.new("TextLabel")
+ExtraPill.AnchorPoint = Vector2.new(0, 1)
+ExtraPill.Size = UDim2.fromOffset(168, 20)
+ExtraPill.Position = UDim2.new(0, 14, 1, -12)
+ExtraPill.BackgroundColor3 = Palette.AccentSoft
+ExtraPill.Text = "MORE TOOLS IN DEVELOPMENT"
+ExtraPill.TextColor3 = Color3.fromRGB(111, 161, 255)
+ExtraPill.Font = Enum.Font.Code
+ExtraPill.TextSize = 10
+ExtraPill.ZIndex = 4
+ExtraPill.Parent = PageExtra
+AddCorner(ExtraPill, 10)
+AddStroke(ExtraPill, Palette.Accent, 0.45)
 end
+RunBuilder("Extra")
 
 -- ============ teleport page ============
+Builders.Teleport = function()
 local TeleportTitle = Instance.new("TextLabel")
 TeleportTitle.Size = UDim2.new(1, -28, 0, 20)
 TeleportTitle.Position = UDim2.new(0, 14, 0, 12)
@@ -1759,7 +2050,7 @@ TeleportTitle.TextXAlignment = Enum.TextXAlignment.Left
 TeleportTitle.ZIndex = 4
 TeleportTitle.Parent = PageTeleport
 
-local function CreatePageButton(ParentPage, ButtonText, TopOffset, IsPrimary, OnClick)
+CreatePageButton = function(ParentPage, ButtonText, TopOffset, IsPrimary, OnClick)
     local Button = Instance.new("TextButton")
     Button.Size = UDim2.new(1, -28, 0, 34)
     Button.Position = UDim2.new(0, 14, 0, TopOffset)
@@ -1976,9 +2267,11 @@ TeleportHintLabel.TextXAlignment = Enum.TextXAlignment.Left
 TeleportHintLabel.TextYAlignment = Enum.TextYAlignment.Top
 TeleportHintLabel.ZIndex = 4
 TeleportHintLabel.Parent = PageTeleport
+end
+RunBuilder("Teleport")
 
 -- ============ author page ============
-do
+Builders.Author = function()
 local function CreateAuthorRow(CaptionText, ValueText, RowIndex)
     local RowTop = 18 + (RowIndex * 30)
 
@@ -2041,14 +2334,46 @@ task.spawn(function()
         GameValue.Text = Info.Name
     end
 end)
+
+local UpdateTitle = Instance.new("TextLabel")
+UpdateTitle.Size = UDim2.new(1, -28, 0, 16)
+UpdateTitle.Position = UDim2.new(0, 14, 0, 178)
+UpdateTitle.BackgroundTransparency = 1
+UpdateTitle.Text = "UPDATE 1.0.1"
+UpdateTitle.TextColor3 = Color3.fromRGB(111, 161, 255)
+UpdateTitle.Font = Enum.Font.Code
+UpdateTitle.TextSize = 11
+UpdateTitle.TextXAlignment = Enum.TextXAlignment.Left
+UpdateTitle.ZIndex = 4
+UpdateTitle.Parent = PageAuthor
+
+local UpdateNotes = Instance.new("TextLabel")
+UpdateNotes.Size = UDim2.new(1, -28, 0, 104)
+UpdateNotes.Position = UDim2.new(0, 14, 0, 198)
+UpdateNotes.BackgroundTransparency = 1
+UpdateNotes.Text = table.concat({
+    "ADDED   Prediction Aimbot, Kill All, Auto Grab Gun",
+    "FIXED   Kill Aura range configs and wall checks",
+    "FIXED   startup stability and module isolation",
+    "CHANGED Black Alibi MM2 branding and combat layout",
+}, "\n")
+UpdateNotes.TextColor3 = Palette.TextDim
+UpdateNotes.Font = Enum.Font.Code
+UpdateNotes.TextSize = 10
+UpdateNotes.TextWrapped = true
+UpdateNotes.TextXAlignment = Enum.TextXAlignment.Left
+UpdateNotes.TextYAlignment = Enum.TextYAlignment.Top
+UpdateNotes.ZIndex = 4
+UpdateNotes.Parent = PageAuthor
 end
+RunBuilder("Author")
 
 -- ============ settings page ============
 local CollectConfigSnapshot
 local ApplyConfigSnapshot
 local RunPanicExit
 
-do
+Builders.Settings = function()
 local SettingsTitle = Instance.new("TextLabel")
 SettingsTitle.Size = UDim2.new(1, -28, 0, 20)
 SettingsTitle.Position = UDim2.new(0, 14, 0, 14)
@@ -2396,6 +2721,7 @@ end)
 -- the config status line already sits above the button, so no extra hint here
 PanicButton.Text = "PANIC EXIT · INSTANT"
 end
+RunBuilder("Settings")
 
 -- ============ minimize bar ============
 -- same square controls as the header: minus restores, cross asks to close
@@ -2619,6 +2945,14 @@ ConfirmCancel.Activated:Connect(CloseConfirm)
 -- ROLE ENGINE
 -- ============================================================
 
+-- Only two booleans and three entry points leave this scope. Everything else
+-- is private to the role engine, which keeps the main Luau chunk comfortably
+-- below the 200-local compiler limit.
+local HighlightEnabled = false
+local NameTagsEnabled = false
+
+Builders.RoleEngine = function()
+
 -- roles are taken from MM2's own data, not guessed from a knife showing up.
 -- GetPlayerData runs once at boot. After that, only the known role events
 -- (Fade, UpdatePlayerData, RoleSelect and RoundEndFade) can trigger updates.
@@ -2632,8 +2966,6 @@ local EspNameTags = {}
 local JoinedMidRound = {}
 local WatchedContainers = {}
 
-local HighlightEnabled = false
-local NameTagsEnabled = false
 local RoundIsLive = false
 local ActiveRoleSource = "WAITING"
 local RoundSheriffUserId = nil
@@ -3130,8 +3462,26 @@ ApplyNameTagState = function(NewState)
     ScanEveryone()
 end
 
+CleanupRoleEsp = function()
+    HighlightEnabled = false
+    NameTagsEnabled = false
+
+    for TargetPlayer in pairs(RoleByPlayer) do
+        DestroyEspFor(TargetPlayer)
+    end
+end
+
+StartRoleEngine = function()
+    task.spawn(function()
+        CollectGameDataRoles()
+        ScanEveryone()
+    end)
+end
+end
+RunBuilder("RoleEngine")
+
 -- ============ notifications ============
-do
+Builders.Notifications = function()
 -- bottom right corner, cards slide in from the side and time themselves out
 local NotificationHolder = Instance.new("Frame")
 NotificationHolder.Name = "NotificationHolder"
@@ -3244,12 +3594,13 @@ ShowNotification = function(TitleText, BodyText, AccentColor)
     end)
 end
 end
+RunBuilder("Notifications")
 
 -- ============ dropped gun esp ============
 local GunEspEnabled = false
 local ClearGunEsp
 
-do
+Builders.GunSystem = function()
 local GunAccentColor = Color3.fromRGB(255, 190, 62)
 local GunHighlight = nil
 local GunTagBillboard = nil
@@ -3469,6 +3820,11 @@ local function HandleGunPresence()
     if GunIsPresent and not GunIsOnGround then
         GunIsOnGround = true
         ShowNotification("GUN DROPPED", "The sheriff's revolver hit the ground.", GunAccentColor)
+
+        -- the Extra tab can take it straight away
+        if AutoGrabGunEnabled and TryAutoGrabGun then
+            TryAutoGrabGun()
+        end
     elseif not GunIsPresent and GunIsOnGround then
         GunIsOnGround = false
     end
@@ -3609,6 +3965,23 @@ RunGrabGun = function()
     end)
 end
 end
+RunBuilder("GunSystem")
+
+-- the Extra tab toggle routes back into the same grab routine
+TryAutoGrabGun = function()
+    if not CoreIsAlive or not AutoGrabGunEnabled then
+        return
+    end
+    if not RunGrabGun then
+        return
+    end
+    -- a short beat lets the drop settle before we teleport onto it
+    task.delay(0.25, function()
+        if CoreIsAlive and AutoGrabGunEnabled and LocateDroppedGun and LocateDroppedGun() then
+            RunGrabGun()
+        end
+    end)
+end
 
 -- ============ config binding ============
 -- Each toggle row hands back a setter, so replaying a config drives the same
@@ -3627,9 +4000,11 @@ CollectConfigSnapshot = function()
         AntiFling = AntiFlingEnabled,
         SlowSpin = SpinEnabled,
         KillAura = KillAuraEnabled,
+        KillAuraRange = KillAuraRange, -- 1.0.1: this was missing before
         LegitMode = LegitModeEnabled,
-        Aimbot = AimbotEnabled,
+        PredictionAimbot = AimbotEnabled,
         AimWallCheck = AimWallCheckEnabled,
+        AutoGrabGun = AutoGrabGunEnabled,
         FieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or DEFAULT_FIELD_OF_VIEW,
     }
 end
@@ -3648,6 +4023,9 @@ ApplyConfigSnapshot = function(Snapshot)
     if type(Snapshot.FieldOfView) == "number" then
         SetFovSlider(Snapshot.FieldOfView)
     end
+    if type(Snapshot.KillAuraRange) == "number" and SetKillAuraRange then
+        SetKillAuraRange(Snapshot.KillAuraRange)
+    end
 
     Setters.Highlight(Snapshot.RoleHighlight == true)
     Setters.NameTags(Snapshot.NameTags == true)
@@ -3659,8 +4037,10 @@ ApplyConfigSnapshot = function(Snapshot)
     Setters.SlowSpin(Snapshot.SlowSpin == true)
     Setters.KillAura(Snapshot.KillAura == true)
     Setters.LegitMode(Snapshot.LegitMode ~= false)
-    Setters.Aimbot(Snapshot.Aimbot == true)
+    -- "Aimbot" is read for backward compatibility with pre-1.0.1 configs.
+    Setters.Aimbot(Snapshot.PredictionAimbot == true or Snapshot.Aimbot == true)
     Setters.AimWallCheck(Snapshot.AimWallCheck ~= false)
+    Setters.AutoGrabGun(Snapshot.AutoGrabGun == true)
 end
 
 -- ============ shutdown ============
@@ -3682,6 +4062,7 @@ local function ShutdownCore()
     SpinEnabled = false
     KillAuraEnabled = false
     AimbotEnabled = false
+    AutoGrabGunEnabled = false
     StopNoclip()
     ClearGunEsp()
     DisableXRay()
@@ -3696,8 +4077,8 @@ local function ShutdownCore()
         workspace.CurrentCamera.FieldOfView = DEFAULT_FIELD_OF_VIEW
     end
 
-    for TargetPlayer in pairs(RoleByPlayer) do
-        DestroyEspFor(TargetPlayer)
+    if CleanupRoleEsp then
+        CleanupRoleEsp()
     end
 
     -- hand the character back to the game with stock movement values
@@ -3729,14 +4110,12 @@ RunPanicExit = function()
 end
 
 -- ============ boot ============
-SetBackdrop(true)
-Animate(MainWindow, TweenSlow, {GroupTransparency = 0})
-Animate(WindowScale, TweenSlow, {Scale = 1})
 task.spawn(function()
-    CollectGameDataRoles() -- one request at boot, later updates are event driven
-    ScanEveryone()
+    if StartRoleEngine then
+        StartRoleEngine()
+    end
 end)
 
 -- ============================================================
--- by GachiRave · 1.0.0 · stable release
+-- by GachiRave · 1.0.1 · stable release
 -- ============================================================
