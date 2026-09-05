@@ -3,90 +3,9 @@
 -- author  : by GachiRave
 -- target  : Murder Mystery 2
 --
--- how roles are read (no waiting for the 10s role selector):
---   1. GetPlayerData, requested once when the script starts
---   2. Fade / UpdatePlayerData events sent by MM2
---   3. equipment, only as a silent fallback
--- hero is layered on top: the round's sheriff is remembered from the
--- data, and any other player holding the gun afterwards is painted Hero
---
--- ============================================================
--- CHANGELOG 1.0.2
--- ============================================================
--- ADDED
---   Server Hop on the Teleport tab. Pulls the public server list, drops any
---   server that is full or the one you are already in, and jumps to a random
---   survivor. Falls back to a same-place rejoin if the list can't be read.
---
---   Teleport To Sheriff and Teleport To Murderer. Both read the role table
---   built by the role engine and drop you right behind the target: one stud
---   for the sheriff, roughly two and a half for the murderer, close enough
---   for a clean revolver shot without walking into melee range.
---
---   Murderer Radar on the ESP tab. A compass arrow plus a distance readout
---   that tracks the murderer's position through walls once their role is
---   known, so you always know which way to run.
---
---   Danger Alert on the ESP tab. Pulses a red screen border and fires a
---   notification the moment the murderer closes inside eighteen studs.
---
---   Auto Collect Coins on the Extra tab. Touches every coin inside a short
---   radius on its own, no more manual sweeping of the map.
---
---   Role Reveal banner. The instant the round hands you a role, a card
---   slides down from the top of the screen with your role name and colour,
---   then clears itself after four seconds.
---
---   Knife Throw button for the murderer. Turning it on drops a draggable
---   button onto the screen; tapping it drives the knife into the nearest
---   clear target, preferring the sheriff whenever one is out in the open,
---   and the same line of sight check used by the aimbot keeps it from
---   firing through walls.
---
--- FIXED
---   Kill All could bring the whole client down on a full lobby. The sweep
---   now runs on frame synced waits instead of raw timers, re-validates the
---   knife and every target before each touch, and never touches a torn
---   reference left behind by a player who disconnected mid sweep.
---
--- CHANGED
---   Prediction Aimbot now solves its own lead time in two passes instead of
---   one, closing the gap that under led targets sprinting across the screen.
---
---   Toggle rows and panel switches get a short press and release scale plus
---   a small bounce on their ON / OFF pill, matching the buttons that already
---   had that feedback.
---
---   Window height grew to fit the new controls without crowding the tabs
---   that were already there.
--- ============================================================
--- CHANGELOG 1.0.1
--- ============================================================
--- ADDED
---   Prediction Aimbot tracks the murderer's body and calculates horizontal
---   lead from distance, network latency and smoothed assembly velocity.
---   Vertical lead is handled separately and capped to one stud, so a jumping
---   target cannot drag the crosshair several metres into the air.
---
---   Kill All in the murderer panel. One sweep over every living player
---   instead of waiting for them to walk into aura range.
---
---   Auto Grab Gun on the Extra tab. Watches for the drop and collects it
---   automatically, then returns you to the spot you were standing on.
---
--- FIXED
---   Kill Aura range was never written into a config. Saving a preset kept
---   the toggles but the slider always came back as 12. The number is part
---   of the snapshot now and is restored on load.
---
---   Line of sight could still approve a target behind thin or one sided
---   geometry, so the aim sometimes locked through a wall. The check now
---   samples the head, torso and lower body, and any solid hit blocks it.
---
--- CHANGED
---   Renamed from Black Alibi GachiRave to Black Alibi MM2.
---   Page transitions, toggle feedback and notification motion reworked.
--- ============================================================
+-- roles come from the game's own data: GetPlayerData at boot, then the Fade
+-- and UpdatePlayerData events, equipment only as a quiet fallback. hero is
+-- layered on top for whoever picks the dropped gun up after the sheriff dies.
 
 -- ============ config ============
 local SCRIPT_BRAND_NAME = "Black Alibi MM2"
@@ -114,8 +33,7 @@ local TeleportService = game:GetService("TeleportService")
 
 local LocalPlayer = PlayersService.LocalPlayer
 
--- Mobile executors do not all expose CoreGui in the same way. Prefer their
--- protected UI container when available, then fall back to CoreGui.
+-- mobile executors expose CoreGui differently; prefer the protected container
 local InterfaceParent = CoreGuiService
 if type(gethui) == "function" then
     local ContainerSucceeded, ProtectedContainer = pcall(gethui)
@@ -232,7 +150,7 @@ local ParentSucceeded = pcall(function()
     RootGui.Parent = InterfaceParent
 end)
 if not ParentSucceeded or not RootGui.Parent then
-    -- Last resort for executors that expose CoreGui but reject direct writes.
+    -- some executors accept CoreGui reads but reject writes
     RootGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 end
 
@@ -242,7 +160,7 @@ DimLayer.Size = UDim2.fromScale(1, 1)
 DimLayer.BackgroundColor3 = Color3.new(0, 0, 0)
 DimLayer.BackgroundTransparency = 1
 DimLayer.BorderSizePixel = 0
-DimLayer.Active = false -- purely cosmetic, the game still gets the input
+DimLayer.Active = false -- cosmetic only, the game keeps the input
 DimLayer.Visible = false
 DimLayer.ZIndex = 1
 DimLayer.Parent = RootGui
@@ -292,9 +210,7 @@ local WindowScale = Instance.new("UIScale")
 WindowScale.Scale = 0.97
 WindowScale.Parent = MainWindow
 
--- If a secondary module errors during construction, do not leave a fully
--- transparent GUI behind. The interface still opens and the executor console
--- keeps the original error available for diagnosis.
+-- if some module dies while building, don't leave an invisible window behind
 task.delay(1.2, function()
     if RootGui.Parent and MainWindow.Parent and MainWindow.GroupTransparency >= 0.99 then
         MainWindow.GroupTransparency = 0
@@ -326,8 +242,8 @@ BrandLabel.TextXAlignment = Enum.TextXAlignment.Left
 BrandLabel.ZIndex = 3
 BrandLabel.Parent = Header
 
--- TextBounds is often zero during the first render frame. TextService gives
--- us the real width immediately, so the version can never cover "MM2".
+-- TextBounds is empty on the first frame; TextService gives the width now,
+-- so the version chip can never end up sitting on top of "MM2"
 local BrandTextWidth = 120
 pcall(function()
     BrandTextWidth = TextService:GetTextSize(
@@ -426,7 +342,7 @@ SidebarEdge.BorderSizePixel = 0
 SidebarEdge.ZIndex = 3
 SidebarEdge.Parent = Sidebar
 
--- sliding accent bar that follows the active tab, cheap and smooth
+-- thin accent bar that slides to the active tab
 local TabIndicator = Instance.new("Frame")
 TabIndicator.Name = "TabIndicator"
 TabIndicator.AnchorPoint = Vector2.new(0, 0.5)
@@ -467,7 +383,7 @@ local TabCombat = CreateTabButton("Combat", false, 76)
 local TabTeleport = CreateTabButton("Teleport", false, 110)
 local TabExtra = CreateTabButton("Extra", false, 144)
 local TabAuthor = CreateTabButton("Author", false, 178)
-local TabSettings = CreateTabButton("Settings", true, 0) -- pinned to the bottom
+local TabSettings = CreateTabButton("Settings", true, 0)
 
 -- ---- pages ----
 local PageWidth = WINDOW_WIDTH - SIDEBAR_WIDTH
@@ -494,7 +410,7 @@ local PageExtra = CreatePage("PageExtra")
 local PageAuthor = CreatePage("PageAuthor")
 local PageSettings = CreatePage("PageSettings")
 
--- shared between the teleport page and the gun watcher, assigned further down
+-- forward declarations for things pages hand to each other
 local LocateDroppedGun
 local GetGunAnchorPart
 local RunGrabGun
@@ -502,13 +418,12 @@ local ShowNotification
 local SetTeleportStatus
 local CreatePageButton
 
--- combat needs the role table, which the role engine builds much later
+-- combat reads the role table, which the engine builds much later
 local GetRoleOfPlayer
 local CleanupRoleEsp
 local StartRoleEngine
 
--- auto grab lives on the Extra tab but the grab routine is defined with the
--- gun module, so both sides meet through these
+-- auto grab lives on Extra, the grab routine lives in the gun module
 local AutoGrabGunEnabled = false
 local TryAutoGrabGun
 
@@ -517,9 +432,7 @@ local ActivePage = PageEsp
 PageEsp.Visible = true
 PageEsp.GroupTransparency = 0
 
--- page transition, rebuilt.
--- the outgoing page is cut instantly and only the incoming one animates:
--- a short slide from the right plus a fade.
+-- outgoing page is cut instantly, only the incoming one slides and fades
 local PageSlideIn = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 local TabIndicatorTween = TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 local PageRestPosition = UDim2.new(0, SIDEBAR_WIDTH, 0, HEADER_HEIGHT + 1)
@@ -539,13 +452,12 @@ local function SwitchTab(TargetButton, TargetPage)
         })
     end
 
-    -- indicator rides to the new tab
     Animate(TabIndicator, TabIndicatorTween, {
         Position = UDim2.new(0, 0, 0, TargetButton.AbsolutePosition.Y - Sidebar.AbsolutePosition.Y + (TargetButton.AbsoluteSize.Y / 2))
     })
 
     if ActivePage and ActivePage ~= TargetPage then
-        ActivePage.Visible = false -- hard cut, nothing overlaps anymore
+        ActivePage.Visible = false
     end
     ActivePage = TargetPage
 
@@ -566,8 +478,7 @@ TabAuthor.Activated:Connect(function() SwitchTab(TabAuthor, PageAuthor) end)
 TabSettings.Activated:Connect(function() SwitchTab(TabSettings, PageSettings) end)
 Animate(TabEsp, TweenFast, {BackgroundTransparency = 0, TextColor3 = Palette.TextMain})
 
--- Show the shell before optional modules are built. A failure in an executor
--- specific feature can no longer keep the entire interface invisible.
+-- show the shell before the optional modules build
 SetBackdrop(true)
 Animate(MainWindow, TweenSlow, {GroupTransparency = 0})
 Animate(WindowScale, TweenSlow, {Scale = 1})
@@ -612,8 +523,6 @@ local function CreateToggleRow(ParentPage, RowText, TopOffset, OnStateChanged)
     AddCorner(Row, 7)
     local RowStroke = AddStroke(Row, Palette.Stroke, 0.4)
 
-    -- 1.0.2: rows now have their own press feedback instead of only a colour
-    -- change, matching every button elsewhere in the interface.
     local RowScale = Instance.new("UIScale")
     RowScale.Parent = Row
 
@@ -647,7 +556,7 @@ local function CreateToggleRow(ParentPage, RowText, TopOffset, OnStateChanged)
 
     local IsEnabled = false
 
-    -- visuals come straight off the boolean, never off the old text
+    -- visuals always follow the boolean, never the previous text
     local function RenderState()
         Animate(Row, TweenFast, {BackgroundColor3 = IsEnabled and Palette.AccentSoft or Color3.fromRGB(27, 27, 32)})
         Animate(RowStroke, TweenFast, {Color = IsEnabled and Palette.Accent or Palette.Stroke, Transparency = IsEnabled and 0.35 or 0.4})
@@ -656,7 +565,6 @@ local function CreateToggleRow(ParentPage, RowText, TopOffset, OnStateChanged)
         StatePill.Text = IsEnabled and "ON" or "OFF"
         StatePill.TextColor3 = IsEnabled and Color3.fromRGB(255, 255, 255) or Palette.TextFaint
 
-        -- small pop on the pill so a flip actually feels like a switch
         StatePillScale.Scale = 0.7
         Animate(StatePillScale, TweenBounce, {Scale = 1})
     end
@@ -678,7 +586,7 @@ local function CreateToggleRow(ParentPage, RowText, TopOffset, OnStateChanged)
         OnStateChanged(IsEnabled)
     end)
 
-    -- used by the config loader to replay a saved state without a fake click
+    -- the config loader replays a saved state through this instead of a fake click
     local function SetState(ShouldBeEnabled)
         ShouldBeEnabled = ShouldBeEnabled and true or false
         if ShouldBeEnabled == IsEnabled then
@@ -689,8 +597,6 @@ local function CreateToggleRow(ParentPage, RowText, TopOffset, OnStateChanged)
         OnStateChanged(IsEnabled)
     end
 
-    -- only the setter is ever needed outside, returning the row too would
-    -- burn a register per toggle and Luau caps locals per chunk
     return SetState
 end
 
@@ -713,7 +619,7 @@ local function RunBuilder(BuilderName)
     return true
 end
 
--- filled later by the role engine
+-- filled in later by the role engine
 local ApplyHighlightState
 local ApplyNameTagState
 local ApplyGunEspState
@@ -737,18 +643,13 @@ Setters.GunEsp = CreateToggleRow(PageEsp, "GUN DROP ESP", 114, function(NewState
 end)
 
 -- ---- x-ray ----
--- Walls are faded, not deleted. Original transparency is stored per part so
--- toggling off restores the map exactly as the game built it.
+-- walls get faded, never deleted; the original transparency is stored per
+-- part so toggling off gives the map back untouched
 local XRayEnabled = false
 local DisableXRay
 
--- 1.0.2: the murderer radar and the danger alert live on this page too, both
--- run off the role table the same way the rest of the ESP does.
 local MurdererRadarEnabled = false
 local StopMurdererRadar
-
-local DangerAlertEnabled = false
-local StopDangerAlertLoop
 
 Builders.XRay = function()
 local XRayOriginalTransparency = {}
@@ -759,8 +660,8 @@ local function PartIsMapGeometry(TargetPart)
         return false
     end
 
-    -- Accessories are nested below the character model, so checking only the
-    -- direct parent faded hats and layered clothing in the old build.
+    -- accessories sit nested under the character; checking only the direct
+    -- parent used to fade hats and layered clothing too
     local AncestorModel = TargetPart:FindFirstAncestorOfClass("Model")
     if AncestorModel and PlayersService:GetPlayerFromCharacter(AncestorModel) then
         return false
@@ -775,7 +676,7 @@ local function PartIsMapGeometry(TargetPart)
     end
 
     if TargetPart.Transparency >= 1 then
-        return false -- already invisible, leave it alone
+        return false
     end
     return true
 end
@@ -795,7 +696,7 @@ local function EnableXRay()
         end
     end
 
-    -- new map pieces stream in as the round loads
+    -- new map chunks stream in as the round loads
     XRayDescendantConnection = workspace.DescendantAdded:Connect(function(NewDescendant)
         if XRayEnabled and PartIsMapGeometry(NewDescendant) then
             task.defer(function()
@@ -832,14 +733,16 @@ end
 RunBuilder("XRay")
 
 -- ---- murderer radar ----
--- Pure position math off the role table, never a raycast, so the compass
--- keeps working through walls exactly like the highlight does.
+-- rebuilt. the old needle evered the angle (left and right were swapped),
+-- snapped straight to the target and fired a tween every single frame.
+-- now the angle comes from the camera's right vector, the needle sweeps
+-- along the shortest path, and the label shows the killer pinned by name.
 Builders.Radar = function()
 local RadarHolder = Instance.new("Frame")
 RadarHolder.Name = "MurdererRadar"
 RadarHolder.AnchorPoint = Vector2.new(0.5, 0)
 RadarHolder.Position = UDim2.new(0.5, 0, 0, 14)
-RadarHolder.Size = UDim2.fromOffset(120, 54)
+RadarHolder.Size = UDim2.fromOffset(150, 62)
 RadarHolder.BackgroundColor3 = Palette.Window
 RadarHolder.BackgroundTransparency = 0.15
 RadarHolder.BorderSizePixel = 0
@@ -847,48 +750,61 @@ RadarHolder.Visible = false
 RadarHolder.ZIndex = 30
 RadarHolder.Parent = RootGui
 AddCorner(RadarHolder, 10)
-local RadarStroke = AddStroke(RadarHolder, Color3.fromRGB(255, 72, 72), 0.3)
+local RadarStroke = AddStroke(RadarHolder, Color3.fromRGB(255, 72, 72), 0.35)
 
 local RadarArrow = Instance.new("TextLabel")
-RadarArrow.Size = UDim2.fromOffset(40, 28)
+RadarArrow.Size = UDim2.fromOffset(40, 26)
 RadarArrow.AnchorPoint = Vector2.new(0.5, 0)
-RadarArrow.Position = UDim2.new(0.5, 0, 0, 4)
+RadarArrow.Position = UDim2.new(0.5, 0, 0, 3)
 RadarArrow.BackgroundTransparency = 1
 RadarArrow.Text = "▲"
 RadarArrow.TextColor3 = Color3.fromRGB(255, 72, 72)
 RadarArrow.Font = Enum.Font.Code
-RadarArrow.TextSize = 22
+RadarArrow.TextSize = 20
 RadarArrow.ZIndex = 31
 RadarArrow.Parent = RadarHolder
 
+local RadarNameLabel = Instance.new("TextLabel")
+RadarNameLabel.Size = UDim2.new(1, -10, 0, 13)
+RadarNameLabel.AnchorPoint = Vector2.new(0.5, 0)
+RadarNameLabel.Position = UDim2.new(0.5, 0, 0, 31)
+RadarNameLabel.BackgroundTransparency = 1
+RadarNameLabel.Text = "NO MURDERER YET"
+RadarNameLabel.TextColor3 = Palette.TextDim
+RadarNameLabel.Font = Enum.Font.Code
+RadarNameLabel.TextSize = 10
+RadarNameLabel.ZIndex = 31
+RadarNameLabel.Parent = RadarHolder
+
 local RadarDistanceLabel = Instance.new("TextLabel")
-RadarDistanceLabel.Size = UDim2.new(1, -8, 0, 16)
+RadarDistanceLabel.Size = UDim2.new(1, -10, 0, 13)
 RadarDistanceLabel.AnchorPoint = Vector2.new(0.5, 0)
-RadarDistanceLabel.Position = UDim2.new(0.5, 0, 0, 34)
+RadarDistanceLabel.Position = UDim2.new(0.5, 0, 0, 45)
 RadarDistanceLabel.BackgroundTransparency = 1
-RadarDistanceLabel.Text = "MURDERER · UNKNOWN"
-RadarDistanceLabel.TextColor3 = Palette.TextDim
+RadarDistanceLabel.Text = "— STUDS"
+RadarDistanceLabel.TextColor3 = Palette.TextFaint
 RadarDistanceLabel.Font = Enum.Font.Code
 RadarDistanceLabel.TextSize = 10
 RadarDistanceLabel.ZIndex = 31
 RadarDistanceLabel.Parent = RadarHolder
 
 local RadarConnection = nil
+local CurrentNeedleAngle = 0
 
-local function FindMurdererRootForRadar()
+local function FindMurdererForRadar()
     if not GetRoleOfPlayer then
-        return nil
+        return nil, nil
     end
     for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
         if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == "Murderer" then
             local OtherCharacter = OtherPlayer.Character
             local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
             if OtherRoot then
-                return OtherRoot
+                return OtherPlayer, OtherRoot
             end
         end
     end
-    return nil
+    return nil, nil
 end
 
 StopMurdererRadar = function()
@@ -896,6 +812,7 @@ StopMurdererRadar = function()
         RadarConnection:Disconnect()
         RadarConnection = nil
     end
+    CurrentNeedleAngle = 0
     RadarHolder.Visible = false
 end
 
@@ -905,7 +822,7 @@ local function StartRadarLoop()
     end
     RadarHolder.Visible = true
 
-    RadarConnection = RunService.Heartbeat:Connect(function()
+    RadarConnection = RunService.RenderStepped:Connect(function(DeltaTime)
         if not CoreIsAlive or not MurdererRadarEnabled then
             return
         end
@@ -913,29 +830,48 @@ local function StartRadarLoop()
         local Character = LocalPlayer.Character
         local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
         local ActiveCamera = workspace.CurrentCamera
-        local MurdererRoot = FindMurdererRootForRadar()
+        local MurdererPlayer, MurdererRoot = FindMurdererForRadar()
 
         if not MurdererRoot or not RootPart or not ActiveCamera then
-            RadarArrow.Rotation = 0
-            RadarDistanceLabel.Text = "MURDERER · UNKNOWN"
-            Animate(RadarStroke, TweenFast, {Transparency = 0.5})
+            RadarNameLabel.Text = "NO MURDERER YET"
+            RadarDistanceLabel.Text = "— STUDS"
+            RadarDistanceLabel.TextColor3 = Palette.TextFaint
+            RadarStroke.Transparency = 0.55
             return
         end
 
+        -- flatten everything onto the ground plane
         local ToTarget = MurdererRoot.Position - RootPart.Position
-        local Distance = ToTarget.Magnitude
-        local CameraForward = ActiveCamera.CFrame.LookVector
         local FlatToTarget = Vector3.new(ToTarget.X, 0, ToTarget.Z)
-        local FlatForward = Vector3.new(CameraForward.X, 0, CameraForward.Z)
+        local FlatForward = Vector3.new(ActiveCamera.CFrame.LookVector.X, 0, ActiveCamera.CFrame.LookVector.Z)
+        local FlatRight = Vector3.new(ActiveCamera.CFrame.RightVector.X, 0, ActiveCamera.CFrame.RightVector.Z)
 
-        if FlatToTarget.Magnitude > 0.01 and FlatForward.Magnitude > 0.01 then
-            local Cross = (FlatForward.X * FlatToTarget.Z) - (FlatForward.Z * FlatToTarget.X)
-            local Dot = (FlatForward.X * FlatToTarget.X) + (FlatForward.Z * FlatToTarget.Z)
-            RadarArrow.Rotation = math.deg(math.atan2(Cross, Dot))
+        -- right-vector dot is positive when the target sits right of the
+        -- camera, so atan2 maps straight onto a clockwise gui rotation
+        if FlatToTarget.Magnitude > 0.1 and FlatForward.Magnitude > 0.01 and FlatRight.Magnitude > 0.01 then
+            local TargetAngle = math.deg(math.atan2(FlatToTarget:Dot(FlatRight), FlatToTarget:Dot(FlatForward)))
+
+            -- unwrap onto the shortest path so the needle never spins the long way round
+            local AngleDifference = (TargetAngle - CurrentNeedleAngle) % 360
+            if AngleDifference > 180 then
+                AngleDifference = AngleDifference - 360
+            elseif AngleDifference < -180 then
+                AngleDifference = AngleDifference + 360
+            end
+
+            local NeedleBlend = 1 - math.exp(-14 * math.clamp(DeltaTime, 0, 0.1))
+            CurrentNeedleAngle = CurrentNeedleAngle + AngleDifference * NeedleBlend
+            RadarArrow.Rotation = CurrentNeedleAngle
         end
 
-        RadarDistanceLabel.Text = "MURDERER · " .. math.floor(Distance) .. " STUDS"
-        Animate(RadarStroke, TweenFast, {Transparency = 0.15})
+        local Distance = math.floor(ToTarget.Magnitude)
+        RadarNameLabel.Text = string.upper(MurdererPlayer.Name)
+        RadarDistanceLabel.Text = tostring(Distance) .. " STUDS"
+
+        -- since the danger overlay is gone, closeness shows up right here
+        local MurdererIsClose = Distance <= 25
+        RadarDistanceLabel.TextColor3 = MurdererIsClose and Color3.fromRGB(255, 96, 96) or Palette.TextFaint
+        RadarStroke.Transparency = MurdererIsClose and 0.1 or 0.35
     end)
 end
 
@@ -950,95 +886,10 @@ end)
 end
 RunBuilder("Radar")
 
--- ---- danger alert ----
-Builders.DangerAlert = function()
-local DANGER_RADIUS = 18
-
-local DangerOverlay = Instance.new("Frame")
-DangerOverlay.Name = "DangerOverlay"
-DangerOverlay.Size = UDim2.fromScale(1, 1)
-DangerOverlay.BackgroundTransparency = 1
-DangerOverlay.BorderSizePixel = 0
-DangerOverlay.Active = false
-DangerOverlay.ZIndex = 25
-DangerOverlay.Parent = RootGui
-
-local DangerStroke = Instance.new("UIStroke")
-DangerStroke.Thickness = 6
-DangerStroke.Color = Color3.fromRGB(255, 60, 60)
-DangerStroke.Transparency = 1
-DangerStroke.Parent = DangerOverlay
-
-local DangerConnection = nil
-local WasInDanger = false
-
-StopDangerAlertLoop = function()
-    if DangerConnection then
-        DangerConnection:Disconnect()
-        DangerConnection = nil
-    end
-    DangerStroke.Transparency = 1
-    WasInDanger = false
-end
-
-local function StartDangerAlertLoop()
-    if DangerConnection then
-        return
-    end
-
-    DangerConnection = RunService.Heartbeat:Connect(function()
-        if not CoreIsAlive or not DangerAlertEnabled then
-            return
-        end
-
-        local Character = LocalPlayer.Character
-        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-        if not RootPart or not GetRoleOfPlayer then
-            return
-        end
-
-        local InDangerNow = false
-        for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
-            if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == "Murderer" then
-                local OtherCharacter = OtherPlayer.Character
-                local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
-                if OtherRoot and (OtherRoot.Position - RootPart.Position).Magnitude <= DANGER_RADIUS then
-                    InDangerNow = true
-                    break
-                end
-            end
-        end
-
-        if InDangerNow and not WasInDanger then
-            WasInDanger = true
-            if ShowNotification then
-                ShowNotification("DANGER", "The murderer is close.", Color3.fromRGB(255, 72, 72))
-            end
-        elseif not InDangerNow then
-            WasInDanger = false
-        end
-
-        DangerStroke.Transparency = InDangerNow
-            and math.clamp(0.35 + (0.35 * math.sin(os.clock() * 6)), 0.2, 0.75)
-            or 1
-    end)
-end
-
-Setters.DangerAlert = CreateToggleRow(PageEsp, "DANGER ALERT", 228, function(NewState)
-    DangerAlertEnabled = NewState
-    if NewState then
-        StartDangerAlertLoop()
-    else
-        StopDangerAlertLoop()
-    end
-end)
-end
-RunBuilder("DangerAlert")
-
--- where the roles are actually coming from right now
+-- where the roles are coming from right now
 local RoleSourceLabel = Instance.new("TextLabel")
 RoleSourceLabel.Size = UDim2.new(1, -28, 0, 14)
-RoleSourceLabel.Position = UDim2.new(0, 14, 0, 266)
+RoleSourceLabel.Position = UDim2.new(0, 14, 0, 232)
 RoleSourceLabel.BackgroundTransparency = 1
 RoleSourceLabel.Text = "SOURCE : WAITING"
 RoleSourceLabel.TextColor3 = Palette.TextFaint
@@ -1109,9 +960,8 @@ local function CreateValueSlider(ParentPage, RowLabelText, TopOffset, MinValue, 
     RowLabel.ZIndex = 4
     RowLabel.Parent = ParentPage
 
-    -- typed input, commits on focus lost or enter.
-    -- ZIndex is deliberately above the drag sensor: on a phone the thumb is
-    -- wide enough to touch both, and the number box must win that fight.
+    -- the box sits above the drag sensor in z, so a thumb press on the number
+    -- opens the keyboard instead of dragging the track
     local ValueBox = Instance.new("TextBox")
     ValueBox.AnchorPoint = Vector2.new(1, 0)
     ValueBox.Size = UDim2.fromOffset(58, 20)
@@ -1154,9 +1004,6 @@ local function CreateValueSlider(ParentPage, RowLabelText, TopOffset, MinValue, 
     Knob.Parent = TrackBackground
     AddCorner(Knob, 7)
 
-    -- the sensor used to be 34px tall and reached up into the number box, so a
-    -- tap meant to edit the value dragged the slider instead. it now stays
-    -- inside its own row and never crosses into the box above it.
     local Sensor = Instance.new("TextButton")
     Sensor.AnchorPoint = Vector2.new(0, 0.5)
     Sensor.Size = UDim2.new(1, 0, 0, 18)
@@ -1227,7 +1074,7 @@ local function CreateValueSlider(ParentPage, RowLabelText, TopOffset, MinValue, 
         if TypedNumber then
             CommitValue(TypedNumber, true)
         else
-            ValueBox.Text = tostring(CurrentValue) -- garbage in, old value back
+            ValueBox.Text = tostring(CurrentValue)
         end
     end)
 
@@ -1248,7 +1095,6 @@ PlayerTitle.TextXAlignment = Enum.TextXAlignment.Left
 PlayerTitle.ZIndex = 4
 PlayerTitle.Parent = PagePlayer
 
--- zoom sits at the top of the tab, it is the control people reach for first
 local DEFAULT_FIELD_OF_VIEW = 70
 local CurrentFieldOfView = DEFAULT_FIELD_OF_VIEW
 
@@ -1295,7 +1141,7 @@ end)
 ResetMovementButton.Activated:Connect(function()
     SetSpeedSlider(DEFAULT_WALK_SPEED)
     SetJumpSlider(DEFAULT_JUMP_POWER)
-    SetFovSlider(DEFAULT_FIELD_OF_VIEW) -- zoom goes back to stock as well
+    SetFovSlider(DEFAULT_FIELD_OF_VIEW)
 end)
 
 -- no polling loop: property signals only fire if MM2 tries to reset a value
@@ -1327,7 +1173,6 @@ local function BindMovementEnforcement(Humanoid)
     end))
 end
 
--- keep the values through respawns
 LocalPlayer.CharacterAdded:Connect(function(NewCharacter)
     local Humanoid = NewCharacter:WaitForChild("Humanoid", 15)
     if Humanoid then
@@ -1345,8 +1190,8 @@ end
 RunBuilder("Movement")
 
 -- ---- noclip ----
--- the connection exists only while the toggle is on, so nothing is stepped
--- when the feature is off. collisions are restored on disable and on exit.
+-- the connection only exists while the toggle is on, and collisions are
+-- restored on disable and on exit
 local NoclipEnabled = false
 local StopNoclip
 
@@ -1386,7 +1231,7 @@ local function StartNoclip()
             return
         end
 
-        -- direct children only: limbs and root, no deep descendant walk
+        -- direct children only: limbs and root, no deep walk
         for _, Part in ipairs(Character:GetChildren()) do
             if Part:IsA("BasePart") and Part.CanCollide then
                 NoclipDisabledParts[Part] = true
@@ -1413,7 +1258,6 @@ end
 RunBuilder("Noclip")
 
 -- ---- infinite jump ----
--- JumpRequest already fires once per tap, so there is no loop to keep alive
 local InfiniteJumpEnabled = false
 
 UserInputService.JumpRequest:Connect(function()
@@ -1431,18 +1275,15 @@ Setters.InfiniteJump = CreateToggleRow(PagePlayer, "INFINITE JUMP", 184, functio
 end)
 
 -- ---- anti fling ----
--- Fling exploits work by slamming huge angular velocity into your assembly.
--- We watch the root part and clamp anything past a sane threshold.
+-- a flinger pushes you through collision, so clamping your own velocity is
+-- the wrong fix. the reliable answer: let every other character pass
+-- straight through you. your client owns your physics, so once their limbs
+-- ghost through there is nothing left to push with. the velocity clamp
+-- stays as a backup for launches that still land.
 local AntiFlingEnabled = false
 local ClearAntiFlingConnections
 
 Builders.AntiFling = function()
--- ANTI FLING, DONE PROPERLY.
--- Clamping your own velocity was the wrong fix: a flinger works by ramming
--- their own body into yours, so the push happens through collision before any
--- velocity clamp can react. The reliable answer is to stop other characters
--- from colliding with you at all. Your client owns your physics, so once their
--- limbs pass through you there is nothing left to push with.
 local AntiFlingConnection = nil
 local NoCollisionParts = setmetatable({}, {__mode = "k"})
 local MAX_SAFE_ANGULAR = 40
@@ -1478,7 +1319,6 @@ local function StartAntiFling()
             return
         end
 
-        -- 1. let every other character pass straight through you
         for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
             if OtherPlayer ~= LocalPlayer then
                 local OtherCharacter = OtherPlayer.Character
@@ -1501,7 +1341,6 @@ local function StartAntiFling()
             end
         end
 
-        -- 2. second line of defence for launches that still land
         local Character = LocalPlayer.Character
         local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
         if not RootPart then
@@ -1531,8 +1370,6 @@ end
 RunBuilder("AntiFling")
 
 -- ---- slow spin ----
--- Steady rotation in place. Uses the humanoid's own rotation channel so it
--- does not fight the walk controller or trip the fling protection.
 local SpinEnabled = false
 local StopSpin
 
@@ -1578,7 +1415,7 @@ end)
 end
 RunBuilder("Spin")
 
--- the camera is rebuilt on respawn, so the chosen zoom is stamped back on
+-- the camera rebuilds on respawn, so the chosen zoom gets stamped back on
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(0.4)
     local ActiveCamera = workspace.CurrentCamera
@@ -1588,7 +1425,6 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 -- ============ combat page ============
--- Two separate panels in one tab: the murderer half and the sheriff half.
 local KillAuraEnabled = false
 local LegitModeEnabled = true
 local AimbotEnabled = false
@@ -1598,8 +1434,6 @@ local AimWallCheckEnabled = true
 local KnifeThrowButtonEnabled = false
 local HideKnifeThrowFab
 
--- the range slider used to live entirely inside the combat block, so the
--- config had no way to read or restore it. it is shared now.
 local KillAuraRange = 12
 local SetKillAuraRange
 
@@ -1616,7 +1450,6 @@ CombatTitle.TextXAlignment = Enum.TextXAlignment.Left
 CombatTitle.ZIndex = 4
 CombatTitle.Parent = PageCombat
 
--- a titled panel so each role owns its own box
 local function CreateRolePanel(TitleText, AccentColor, TopOffset, PanelHeight)
     local Panel = Instance.new("Frame")
     Panel.Size = UDim2.new(1, -28, 0, PanelHeight)
@@ -1652,7 +1485,6 @@ local function CreateRolePanel(TitleText, AccentColor, TopOffset, PanelHeight)
     return Panel
 end
 
--- compact row builder scoped to a panel
 local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
     local Row = Instance.new("TextButton")
     Row.Size = UDim2.new(1, -20, 0, 30)
@@ -1736,7 +1568,6 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
         OnStateChanged(IsEnabled)
     end
 
-    -- same rule as the page toggles: hand back only the setter
     return SetState
 end
 
@@ -1852,12 +1683,10 @@ RangeValueBox.FocusLost:Connect(function()
     end
 end)
 
--- hand the config system a way to replay a saved range
 SetKillAuraRange = function(NewValue)
     CommitRange(NewValue, true)
 end
 
--- the knife only registers on a real touch, so the aura fires the touch itself
 local KillAuraConnection = nil
 
 local function GetHeldKnife()
@@ -1872,14 +1701,20 @@ local function GetHeldKnife()
     return Backpack and Backpack:FindFirstChild("Knife")
 end
 
--- legit mode: refuse anything the player could not physically reach
--- one line of sight test shared by the kill aura, the sheriff aim and the
--- knife throw button. all three exclude both characters, so only real map
--- geometry can ever block a shot.
+-- one visibility test shared by kill aura, sheriff aim and the knife throw.
+-- both characters are excluded, so only real map geometry can block
 local function TargetIsVisible(OriginPosition, TargetPart)
     local RayParams = RaycastParams.new()
-    -- older mobile executors still ship the Blacklist enum name
-    RayParams.FilterType = Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Blacklist
+
+    -- old executor builds still ship the Blacklist enum name, so try both
+    local FilterSet = pcall(function()
+        RayParams.FilterType = Enum.RaycastFilterType.Exclude
+    end)
+    if not FilterSet then
+        pcall(function()
+            RayParams.FilterType = Enum.RaycastFilterType.Blacklist
+        end)
+    end
 
     local ExcludedInstances = {}
     if LocalPlayer.Character then
@@ -1891,9 +1726,8 @@ local function TargetIsVisible(OriginPosition, TargetPart)
     RayParams.FilterDescendantsInstances = ExcludedInstances
     RayParams.IgnoreWater = true
 
-    -- A single ray to the centre used to slip past thin walls and one sided
-    -- geometry, which is why the aim still locked through cover sometimes.
-    -- Three samples down the body have to be clear before a target counts.
+    -- three samples down the body: a single center ray used to slip past
+    -- thin walls and let the aim lock through cover
     local SamplePoints = {
         TargetPart.Position + Vector3.new(0, 1.4, 0),
         TargetPart.Position,
@@ -1941,7 +1775,7 @@ local function StartKillAura()
         local Knife = GetHeldKnife()
         local Handle = Knife and Knife:FindFirstChild("Handle")
         if not Handle then
-            return -- not the murderer this round
+            return
         end
 
         local Character = LocalPlayer.Character
@@ -1996,17 +1830,12 @@ Setters.LegitMode = CreatePanelToggle(MurdererPanel, "LEGIT · NO WALL HITS", 98
     LegitModeEnabled = NewState
 end)
 
--- legit protection is on by default, so reflect that immediately
 Setters.LegitMode(true)
 
--- KILL ALL, REBUILT FOR SAFETY.
--- The previous version teleported and touched every player back to back on
--- raw task.wait timers. On a full lobby the burst of PivotTo calls and
--- firetouchinterest calls landed faster than the client could actually
--- replicate them, and that overload is what took the whole game down. This
--- version steps once per rendered frame, re-validates the knife and every
--- target immediately before each touch, and never reuses a reference that
--- might already be gone.
+-- kill all: one target per rendered frame, the knife gets re-read before
+-- every touch, and we always walk back home even if something throws.
+-- the old version hammmered PivotTo and touches back to back on raw timers
+-- and that burst is what used to take the client down on a full lobby
 local KillAllRunning = false
 
 local function RunKillAll()
@@ -2034,8 +1863,8 @@ local function RunKillAll()
     KillAllRunning = true
 
     task.spawn(function()
-        -- a fixed roster taken up front, a player leaving mid sweep can no
-        -- longer shift indices under the loop or hand it a torn reference
+        -- fixed roster up front: a player leaving mid sweep can't shift
+        -- indices under the loop or hand it a torn reference
         local Roster = {}
         for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
             if OtherPlayer ~= LocalPlayer then
@@ -2052,9 +1881,6 @@ local function RunKillAll()
                     break
                 end
 
-                -- fetched fresh every loop: the knife can vanish mid sweep if
-                -- the round ends, and an old Handle reference is exactly what
-                -- used to hand firetouchinterest garbage to work with
                 local CurrentKnife = GetHeldKnife()
                 local CurrentHandle = CurrentKnife and CurrentKnife:FindFirstChild("Handle")
                 if not CurrentHandle or not CurrentHandle.Parent then
@@ -2076,7 +1902,6 @@ local function RunKillAll()
                         RootPart.AssemblyAngularVelocity = Vector3.zero
                     end)
 
-                    -- frame synced, never faster than the client can replicate
                     RunService.Heartbeat:Wait()
 
                     if MoveSucceeded and OtherRoot.Parent then
@@ -2095,7 +1920,6 @@ local function RunKillAll()
             end
         end)
 
-        -- always go home, even if the sweep threw or was cancelled
         if Character.Parent and RootPart.Parent == Character then
             pcall(function()
                 Character:PivotTo(ReturnPivot)
@@ -2157,32 +1981,69 @@ end)
 
 KillAllButton.Activated:Connect(RunKillAll)
 
--- ---------- knife throw button ----------
--- FindKnifeThrowTarget and RunKnifeThrow are defined in full before the
--- floating button is built, so the button's click handler never needs a
--- forward declared upvalue: everything it calls already exists.
+-- ---------- knife throw ----------
+-- reworked end to end. the old version could happily "touch" with a knife
+-- that was still sitting in the backpack, which never registers a kill.
+-- now the knife is equipped first, you pivot to face the target, and the
+-- touch lands on the torso (UpperTorso / Torso), not the head.
+local function GetEquippedKnife()
+    local Character = LocalPlayer.Character
+    if not Character then
+        return nil
+    end
+    local HeldKnife = Character:FindFirstChild("Knife")
+    if HeldKnife and HeldKnife:IsA("Tool") then
+        return HeldKnife
+    end
+    return nil
+end
+
+local function EnsureKnifeInHand()
+    local EquippedKnife = GetEquippedKnife()
+    if EquippedKnife then
+        return EquippedKnife
+    end
+
+    local Backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local PackedKnife = Backpack and Backpack:FindFirstChild("Knife")
+    local Humanoid = GetLocalHumanoid()
+
+    if PackedKnife and Humanoid then
+        Humanoid:EquipTool(PackedKnife)
+        task.wait(0.18) -- the tool needs a beat to land in the hand
+        return GetEquippedKnife()
+    end
+    return nil
+end
+
+local function GetBodyAimPart(TargetCharacter)
+    return TargetCharacter:FindFirstChild("UpperTorso")
+        or TargetCharacter:FindFirstChild("Torso")
+        or TargetCharacter:FindFirstChild("HumanoidRootPart")
+end
+
 local function FindKnifeThrowTarget(RootPart)
     local KNIFE_THROW_MAX_RANGE = 65
 
-    local BestSheriffPlayer, BestSheriffRoot, BestSheriffDistance
-    local BestAnyPlayer, BestAnyRoot, BestAnyDistance
+    local BestSheriffPlayer, BestSheriffTorso, BestSheriffDistance
+    local BestAnyPlayer, BestAnyTorso, BestAnyDistance
 
     for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
         if OtherPlayer ~= LocalPlayer then
             local OtherCharacter = OtherPlayer.Character
-            local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+            local OtherTorso = OtherCharacter and GetBodyAimPart(OtherCharacter)
             local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
 
-            if OtherRoot and OtherHumanoid and OtherHumanoid.Health > 0 then
-                local Distance = (OtherRoot.Position - RootPart.Position).Magnitude
-                if Distance <= KNIFE_THROW_MAX_RANGE and TargetIsVisible(RootPart.Position, OtherRoot) then
+            if OtherTorso and OtherHumanoid and OtherHumanoid.Health > 0 then
+                local Distance = (OtherTorso.Position - RootPart.Position).Magnitude
+                if Distance <= KNIFE_THROW_MAX_RANGE and TargetIsVisible(RootPart.Position, OtherTorso) then
                     local RoleKey = GetRoleOfPlayer and GetRoleOfPlayer(OtherPlayer)
 
                     if RoleKey == "Sheriff" and (not BestSheriffDistance or Distance < BestSheriffDistance) then
-                        BestSheriffPlayer, BestSheriffRoot, BestSheriffDistance = OtherPlayer, OtherRoot, Distance
+                        BestSheriffPlayer, BestSheriffTorso, BestSheriffDistance = OtherPlayer, OtherTorso, Distance
                     end
                     if not BestAnyDistance or Distance < BestAnyDistance then
-                        BestAnyPlayer, BestAnyRoot, BestAnyDistance = OtherPlayer, OtherRoot, Distance
+                        BestAnyPlayer, BestAnyTorso, BestAnyDistance = OtherPlayer, OtherTorso, Distance
                     end
                 end
             end
@@ -2190,43 +2051,76 @@ local function FindKnifeThrowTarget(RootPart)
     end
 
     -- the sheriff always wins the pick when one is out in the open
-    if BestSheriffRoot then
-        return BestSheriffPlayer, BestSheriffRoot
+    if BestSheriffTorso then
+        return BestSheriffPlayer, BestSheriffTorso
     end
-    return BestAnyPlayer, BestAnyRoot
+    return BestAnyPlayer, BestAnyTorso
 end
 
 local function RunKnifeThrow()
-    local Knife = GetHeldKnife()
-    local Handle = Knife and Knife:FindFirstChild("Handle")
-    local TouchFunction = firetouchinterest or (syn and syn.firetouchinterest)
     local Character = LocalPlayer.Character
     local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+    local TouchFunction = firetouchinterest or (syn and syn.firetouchinterest)
 
-    if not Handle or not TouchFunction or not RootPart then
+    if not RootPart then
         if ShowNotification then
-            ShowNotification("KNIFE THROW", "Equip the knife first.", Color3.fromRGB(255, 72, 72))
+            ShowNotification("KNIFE THROW", "No character loaded.", Color3.fromRGB(255, 72, 72))
         end
         return
     end
 
-    local TargetPlayer, TargetRoot = FindKnifeThrowTarget(RootPart)
-    if not TargetPlayer or not TargetRoot then
-        if ShowNotification then
-            ShowNotification("KNIFE THROW", "No clear target in range.", Color3.fromRGB(235, 180, 110))
-        end
-        return
-    end
+    task.spawn(function()
+        local Knife = EnsureKnifeInHand()
+        local Handle = Knife and Knife:FindFirstChild("Handle")
 
-    pcall(function()
-        TouchFunction(TargetRoot, Handle, 0)
-        task.wait()
-        TouchFunction(TargetRoot, Handle, 1)
+        if not Handle then
+            if ShowNotification then
+                ShowNotification("KNIFE THROW", "No knife this round.", Color3.fromRGB(255, 72, 72))
+            end
+            return
+        end
+
+        local TargetPlayer, TargetTorso = FindKnifeThrowTarget(RootPart)
+        if not TargetPlayer or not TargetTorso then
+            if ShowNotification then
+                ShowNotification("KNIFE THROW", "No clear target in range.", Color3.fromRGB(235, 180, 110))
+            end
+            return
+        end
+
+        -- face the body first so the swing reads like a real throw
+        local FlatAimPoint = Vector3.new(TargetTorso.Position.X, RootPart.Position.Y, TargetTorso.Position.Z)
+        pcall(function()
+            RootPart.CFrame = CFrame.lookAt(RootPart.Position, FlatAimPoint)
+            RootPart.AssemblyLinearVelocity = Vector3.zero
+        end)
+
+        -- if the game exposes a throw remote, ping it too; harmless if absent
+        pcall(function()
+            local ThrowRemote = ReplicatedStorageService:FindFirstChild("Throw", true)
+                or ReplicatedStorageService:FindFirstChild("ThrowKnife", true)
+            if ThrowRemote and ThrowRemote:IsA("RemoteEvent") then
+                ThrowRemote:FireServer(TargetTorso.Position)
+            end
+        end)
+
+        RunService.Heartbeat:Wait()
+
+        -- this touch is what actually kills: straight into the torso
+        if TouchFunction then
+            pcall(function()
+                TouchFunction(TargetTorso, Handle, 0)
+            end)
+            RunService.Heartbeat:Wait()
+            pcall(function()
+                TouchFunction(TargetTorso, Handle, 1)
+            end)
+        end
+
+        if ShowNotification then
+            ShowNotification("KNIFE THROW", "Thrown at " .. TargetPlayer.Name .. " · torso.", Color3.fromRGB(255, 120, 120))
+        end
     end)
-
-    if ShowNotification then
-        ShowNotification("KNIFE THROW", "Thrown at " .. TargetPlayer.Name .. ".", Color3.fromRGB(255, 120, 120))
-    end
 end
 
 local KnifeThrowFab = nil
@@ -2295,8 +2189,7 @@ end)
 -- ---------- sheriff panel ----------
 local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 256, 92)
 
--- the aim only makes sense with the revolver actually equipped: a gun sitting
--- in the backpack is not drawn, so the camera must stay free until you hold it
+-- the aim only runs with the revolver actually in hand
 local function GunIsEquipped()
     local Character = LocalPlayer.Character
     if not Character then
@@ -2334,11 +2227,9 @@ local function FindMurdererTarget()
     return nil
 end
 
--- PREDICTION AIMBOT.
--- MM2 shots are fast, so huge generic projectile prediction makes jumpers pull
--- the camera into the ceiling. Horizontal and vertical motion are deliberately
--- solved separately: horizontal lead is dynamic, vertical lead is short and
--- capped. The velocity filter removes one-frame replication spikes.
+-- prediction aim: horizontal lead is solved against predicted distance in
+-- two passes, vertical lead is short and capped so a jumper can't drag the
+-- crosshair into the ceiling. the velocity filter kills one-frame spikes.
 local AIM_RENDER_STEP_NAME = "BlackAlibiPredictionAimbot"
 local AIM_RESPONSE = 28
 local ASSUMED_SHOT_SPEED = 720
@@ -2378,15 +2269,11 @@ local function ClampHorizontalVector(VectorValue, MaximumLength)
     return HorizontalVector
 end
 
--- 1.0.2: the lead time now solves against its own predicted distance instead
--- of the target's current position. A single pass under led anyone sprinting
--- straight across the screen because it measured distance before the lead was
--- even applied. Two passes settle down fast and cost almost nothing.
 local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, TargetHumanoid, DeltaTime)
     local RawVelocity = TargetRoot.AssemblyLinearVelocity
     local PreviousVelocity = SmoothedVelocityByPlayer[TargetPlayer] or RawVelocity
 
-    -- Stable across frame rates: roughly the same filter at 30, 60 and 120 FPS.
+    -- frame rate independent filter: reads the same at 30, 60 and 120 fps
     local VelocityBlend = 1 - math.exp(-10 * math.clamp(DeltaTime, 0, 0.1))
     local SmoothedVelocity = PreviousVelocity:Lerp(RawVelocity, VelocityBlend)
     SmoothedVelocityByPlayer[TargetPlayer] = SmoothedVelocity
@@ -2401,7 +2288,7 @@ local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, Ta
         local PredictedFlatPosition = TargetPart.Position + HorizontalLead
         local Distance = (PredictedFlatPosition - CameraPosition).Magnitude
 
-        -- Half the measured round-trip ping approximates one-way replication delay.
+        -- half the round trip ping is close enough to one-way replication delay
         LeadTime = math.clamp(
             (Distance / ASSUMED_SHOT_SPEED) + (GetNetworkLatencySeconds() * 0.5),
             0.015,
@@ -2413,8 +2300,6 @@ local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, Ta
 
     local VerticalLead = 0
     if TargetHumanoid.FloorMaterial == Enum.Material.Air then
-        -- Only a small fraction of Y velocity is useful for MM2. Capping this
-        -- is what prevents the classic "aim five metres above a jumper" bug.
         local VerticalTime = math.min(LeadTime, 0.09)
         VerticalLead = math.clamp(SmoothedVelocity.Y * VerticalTime, -MAX_VERTICAL_LEAD, MAX_VERTICAL_LEAD)
     end
@@ -2476,15 +2361,15 @@ Setters.AimWallCheck = CreatePanelToggle(SheriffPanel, "LEGIT · NO WALL AIM", 5
     AimWallCheckEnabled = NewState
 end)
 
--- wall protection starts on, same as the murderer side
 Setters.AimWallCheck(true)
 
 end
 RunBuilder("Combat")
 
 -- ============ extra page ============
-local CoinCollectorEnabled = false
-local StopCoinCollectorLoop
+-- the coin collector is gone by request; its slot is now a murderer spectate
+local SpectateMurdererEnabled = false
+local StopSpectateLoop
 
 Builders.Extra = function()
 local ExtraTitle = Instance.new("TextLabel")
@@ -2499,105 +2384,98 @@ ExtraTitle.TextXAlignment = Enum.TextXAlignment.Left
 ExtraTitle.ZIndex = 4
 ExtraTitle.Parent = PageExtra
 
--- AUTO GRAB GUN.
--- Watches for the revolver hitting the ground and collects it without you
--- having to open the teleport tab. Reuses the same grab routine, so the
--- return to your original spot and the physics cleanup come along with it.
+-- grabs the revolver off the ground and puts you back where you stood
 Setters.AutoGrabGun = CreateToggleRow(PageExtra, "AUTO GRAB GUN", 40, function(NewState)
     AutoGrabGunEnabled = NewState
     if NewState and TryAutoGrabGun then
-        TryAutoGrabGun() -- the gun might already be lying there
+        TryAutoGrabGun()
     end
 end)
 
--- AUTO COLLECT COINS.
--- Coins only need a touch, exactly like the gun does, so the same
--- firetouchinterest trick reaches every coin inside a short radius without
--- moving the character at all.
-Builders.CoinCollector = function()
-local CoinConnection = nil
-local COIN_COLLECT_RADIUS = 14
-local NextCoinScan = 0
+-- SPECTATE MURDERER.
+-- the camera's subject jumps to the killer's humanoid, so you watch them
+-- through walls the whole round. killer dies or the toggle goes off and the
+-- camera comes straight back to you.
+Builders.Spectate = function()
+local SpectateConnection = nil
 
-local function GetCoinContainer()
-    for _, FolderName in ipairs({"Map", "Maps", "Normal", "GameMap", "CurrentMap", "MapFolder"}) do
-        local Folder = workspace:FindFirstChild(FolderName)
-        if Folder then
-            local CoinsFolder = Folder:FindFirstChild("Coins", true)
-            if CoinsFolder then
-                return CoinsFolder
-            end
+local function RestoreOwnCamera()
+    local ActiveCamera = workspace.CurrentCamera
+    local OwnHumanoid = GetLocalHumanoid()
+    if ActiveCamera then
+        ActiveCamera.CameraType = Enum.CameraType.Custom
+        if OwnHumanoid then
+            ActiveCamera.CameraSubject = OwnHumanoid
         end
     end
-    return workspace:FindFirstChild("Coins") or workspace
 end
 
-StopCoinCollectorLoop = function()
-    if CoinConnection then
-        CoinConnection:Disconnect()
-        CoinConnection = nil
+StopSpectateLoop = function()
+    if SpectateConnection then
+        SpectateConnection:Disconnect()
+        SpectateConnection = nil
     end
+    RestoreOwnCamera()
 end
 
-local function StartCoinCollectorLoop()
-    if CoinConnection then
+local function StartSpectateLoop()
+    if SpectateConnection then
         return
     end
 
-    CoinConnection = RunService.Heartbeat:Connect(function()
-        if not CoreIsAlive or not CoinCollectorEnabled then
-            return
-        end
-        if os.clock() < NextCoinScan then
-            return
-        end
-        NextCoinScan = os.clock() + 0.15
-
-        local Character = LocalPlayer.Character
-        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-        if not RootPart then
+    SpectateConnection = RunService.Heartbeat:Connect(function()
+        if not CoreIsAlive or not SpectateMurdererEnabled then
             return
         end
 
-        local TouchFunction = firetouchinterest or (syn and syn.firetouchinterest)
-        if not TouchFunction then
+        local ActiveCamera = workspace.CurrentCamera
+        if not ActiveCamera or not GetRoleOfPlayer then
             return
         end
 
-        local Container = GetCoinContainer()
-        for _, Descendant in ipairs(Container:GetDescendants()) do
-            if Descendant:IsA("BasePart") then
-                local LowerName = string.lower(Descendant.Name)
-                if string.find(LowerName, "coin", 1, true) then
-                    local Distance = (Descendant.Position - RootPart.Position).Magnitude
-                    if Distance <= COIN_COLLECT_RADIUS then
-                        pcall(function()
-                            TouchFunction(RootPart, Descendant, 0)
-                            TouchFunction(RootPart, Descendant, 1)
-                        end)
-                    end
+        local KillerHumanoid = nil
+        for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+            if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == "Murderer" then
+                local OtherCharacter = OtherPlayer.Character
+                local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
+                if OtherHumanoid and OtherHumanoid.Health > 0 then
+                    KillerHumanoid = OtherHumanoid
+                    break
                 end
+            end
+        end
+
+        if KillerHumanoid then
+            if ActiveCamera.CameraSubject ~= KillerHumanoid then
+                ActiveCamera.CameraType = Enum.CameraType.Custom
+                ActiveCamera.CameraSubject = KillerHumanoid
+            end
+        else
+            -- killer left or died: hand the camera back before it gets stuck
+            local OwnHumanoid = GetLocalHumanoid()
+            if OwnHumanoid and ActiveCamera.CameraSubject ~= OwnHumanoid then
+                ActiveCamera.CameraSubject = OwnHumanoid
             end
         end
     end)
 end
 
-Setters.CoinCollector = CreateToggleRow(PageExtra, "AUTO COLLECT COINS", 78, function(NewState)
-    CoinCollectorEnabled = NewState
+Setters.Spectate = CreateToggleRow(PageExtra, "SPECTATE MURDERER", 78, function(NewState)
+    SpectateMurdererEnabled = NewState
     if NewState then
-        StartCoinCollectorLoop()
+        StartSpectateLoop()
     else
-        StopCoinCollectorLoop()
+        StopSpectateLoop()
     end
 end)
 end
-RunBuilder("CoinCollector")
+RunBuilder("Spectate")
 
 local ExtraBody = Instance.new("TextLabel")
 ExtraBody.Size = UDim2.new(1, -28, 0, 70)
 ExtraBody.Position = UDim2.new(0, 14, 0, 118)
 ExtraBody.BackgroundTransparency = 1
-ExtraBody.Text = "Auto Grab Gun collects the revolver the moment it drops and returns you to your spot. Auto Collect Coins keeps a short leash on you and touches every coin it finds nearby."
+ExtraBody.Text = "Auto Grab Gun picks the revolver off the floor and returns you to your spot. Spectate Murderer pins the camera to the killer so you can watch every move they make through walls."
 ExtraBody.TextColor3 = Palette.TextFaint
 ExtraBody.Font = Enum.Font.Code
 ExtraBody.TextSize = 10
@@ -2698,11 +2576,8 @@ SetTeleportStatus = function(StatusText, StatusColor)
     Animate(TeleportStatusLabel, TweenFast, {TextTransparency = 0})
 end
 
--- SERVER HOP.
--- Reads the public server list straight from the Roblox games API and jumps
--- to a random server that is not full and is not the one you are already in.
--- If the list can't be read at all, it falls back to a normal rejoin so the
--- button never just does nothing.
+-- server hop: public server list from the games api, skip the full ones and
+-- the one you're in, jump to a random survivor, plain rejoin as a fallback
 local function AttemptServerHop()
     SetTeleportStatus("SEARCHING FOR A SERVER ...", Color3.fromRGB(150, 190, 255))
 
@@ -2715,7 +2590,7 @@ local function AttemptServerHop()
             RawResponse = game:HttpGet(ServersUrl)
         end)
 
-        -- some mobile executors only expose the list under a request function
+        -- some mobile executors only expose http through a request function
         if not FetchSucceeded or not RawResponse then
             local RequestFunction = http_request or request or (syn and syn.request)
             if RequestFunction then
@@ -2783,8 +2658,7 @@ CreatePageButton(PageTeleport, "GRAB GUN", 82, false, function()
     end
 end)
 
--- teleports straight off the role table: same source the radar and the
--- aimbot already trust, so all three agree on who is who
+-- role teleports read the same table the radar and the aimbot trust
 local function FindPlayerWithRole(RoleKey)
     if not GetRoleOfPlayer then
         return nil
@@ -2824,10 +2698,7 @@ CreatePageButton(PageTeleport, "TELEPORT TO MURDERER", 158, false, function()
     end
 end)
 
--- MAP TELEPORT FIX.
--- The old version only looked for a folder called Map or Normal, and MM2 does
--- not always use those names, so the search returned nothing. Four strategies
--- now run in order of reliability and the first hit wins.
+-- finding the map: four strategies in order of reliability, first hit wins
 local function FindRoundMapPivot()
     -- 1. a spawn container inside a map folder is the cleanest landing spot
     for _, FolderName in ipairs({"Map", "Maps", "Normal", "GameMap", "CurrentMap", "MapFolder"}) do
@@ -2852,7 +2723,7 @@ local function FindRoundMapPivot()
         end
     end
 
-    -- 2. coins only exist on an active map, so one is a guaranteed map point
+    -- 2. coins only exist on an active map
     for _, Descendant in ipairs(workspace:GetDescendants()) do
         if Descendant:IsA("BasePart") then
             local LowerName = string.lower(Descendant.Name)
@@ -2862,8 +2733,8 @@ local function FindRoundMapPivot()
         end
     end
 
-    -- 3. a player with a resolved round role is participating on the map.
-    -- Unknown players can still be standing in the lobby, so skip them.
+    -- 3. a player with a resolved round role is on the map; Unknown players
+    -- can still be standing in the lobby, so skip them
     for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
         local OtherRole = GetRoleOfPlayer and GetRoleOfPlayer(OtherPlayer)
         if OtherPlayer ~= LocalPlayer and OtherRole and OtherRole ~= "Unknown" then
@@ -2910,14 +2781,13 @@ local function FindLobbyPivot()
         end
     end
 
-    -- A direct workspace spawn belongs to the persistent lobby, not the map.
     for _, Child in ipairs(workspace:GetChildren()) do
         if Child:IsA("SpawnLocation") then
             return Child.CFrame
         end
     end
 
-    -- Final fallback: reject every spawn living inside an active map folder.
+    -- last resort: any spawn not living inside an active map folder
     for _, Descendant in ipairs(workspace:GetDescendants()) do
         if Descendant:IsA("SpawnLocation") and not ObjectIsInsideActiveMap(Descendant) then
             return Descendant.CFrame
@@ -3046,7 +2916,7 @@ local UpdateTitle = Instance.new("TextLabel")
 UpdateTitle.Size = UDim2.new(1, -28, 0, 16)
 UpdateTitle.Position = UDim2.new(0, 14, 0, 178)
 UpdateTitle.BackgroundTransparency = 1
-UpdateTitle.Text = "UPDATE 1.0.2"
+UpdateTitle.Text = "UPDATE 1.0.2 FINAL"
 UpdateTitle.TextColor3 = Color3.fromRGB(111, 161, 255)
 UpdateTitle.Font = Enum.Font.Code
 UpdateTitle.TextSize = 11
@@ -3059,13 +2929,13 @@ UpdateNotes.Size = UDim2.new(1, -28, 0, 130)
 UpdateNotes.Position = UDim2.new(0, 14, 0, 198)
 UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
-    "ADDED   Server Hop, Sheriff/Murderer teleports",
-    "ADDED   Murderer Radar, Danger Alert, Coin Collector",
-    "ADDED   Role Reveal banner, Knife Throw button",
-    "FIXED   Kill All no longer crashes the client",
-    "CHANGED Prediction Aimbot two pass lead solving",
-    "CHANGED Toggle and panel press feedback",
-}, "\n")
+    "REMOVED  Coin collector and danger alert, both gone for good",
+    "ADDED    Spectate Murderer on the Extra tab",
+    "CHANGED  Radar needle: fixed math, smooth sweep, killer name",
+    "CHANGED  Role reader: boolean roles, retries after Fade",
+    "CHANGED  Knife throw equips first and aims at the torso",
+}, "
+")
 UpdateNotes.TextColor3 = Palette.TextDim
 UpdateNotes.Font = Enum.Font.Code
 UpdateNotes.TextSize = 10
@@ -3095,9 +2965,8 @@ SettingsTitle.TextXAlignment = Enum.TextXAlignment.Left
 SettingsTitle.ZIndex = 4
 SettingsTitle.Parent = PageSettings
 
--- ---- config system ----
--- Saved through the executor file API when it exists. Without it the configs
--- still work for the current session, they just do not survive a relaunch.
+-- configs go through the executor file api when it exists; without it they
+-- still work for the session, they just don't survive a relaunch
 local CONFIG_FOLDER = "BlackAlibiMM2"
 local HttpServiceForJson = game:GetService("HttpService")
 
@@ -3131,7 +3000,7 @@ local function ListSavedConfigs()
         local Ok, Files = pcall(FolderList, CONFIG_FOLDER)
         if Ok and Files then
             for _, FilePath in ipairs(Files) do
-                local Name = string.match(FilePath, "([^/\\]+)%.json$")
+                local Name = string.match(FilePath, "([^/\]+)%.json$")
                 if Name then
                     table.insert(Names, Name)
                 end
@@ -3191,7 +3060,6 @@ ConfigNameBox.FocusLost:Connect(function()
     Animate(ConfigNameStroke, TweenFast, {Color = Palette.Stroke, Transparency = 0.4})
 end)
 
--- horizontal strip of saved configs
 local ConfigListFrame = Instance.new("ScrollingFrame")
 ConfigListFrame.Size = UDim2.new(1, -28, 0, 32)
 ConfigListFrame.Position = UDim2.new(0, 14, 0, 90)
@@ -3430,7 +3298,6 @@ end
 RunBuilder("Settings")
 
 -- ============ minimize bar ============
--- same square controls as the header: minus restores, cross asks to close
 local MinimizeBar = Instance.new("CanvasGroup")
 MinimizeBar.Name = "MinimizeBar"
 MinimizeBar.AnchorPoint = Vector2.new(0.5, 0)
@@ -3479,8 +3346,8 @@ BarExpand.ZIndex = 6
 BarClose.ZIndex = 6
 
 -- ============ minimize / expand ============
--- transition token: a stale Completed callback can no longer hide the
--- window that was already brought back.
+-- the view token keeps a stale Completed callback from hiding a window
+-- that was already brought back
 local ViewToken = 0
 local IsMinimized = false
 
@@ -3515,7 +3382,6 @@ local function ExpandMenu()
     ViewToken = ViewToken + 1
     local MyToken = ViewToken
 
-    -- always snap back to the middle of the screen, wherever it was dragged
     MainWindow.Position = UDim2.fromScale(0.5, 0.5)
     MainWindow.Visible = true
     MainWindow.GroupTransparency = 1
@@ -3543,7 +3409,7 @@ ConfirmOverlay.Size = UDim2.fromScale(1, 1)
 ConfirmOverlay.BackgroundColor3 = Color3.new(0, 0, 0)
 ConfirmOverlay.BackgroundTransparency = 1
 ConfirmOverlay.BorderSizePixel = 0
-ConfirmOverlay.Active = true -- eats input until a choice is made
+ConfirmOverlay.Active = true
 ConfirmOverlay.Visible = false
 ConfirmOverlay.ZIndex = 50
 ConfirmOverlay.Parent = RootGui
@@ -3651,22 +3517,19 @@ ConfirmCancel.Activated:Connect(CloseConfirm)
 -- ROLE ENGINE
 -- ============================================================
 
--- Only two booleans and three entry points leave this scope. Everything else
--- is private to the role engine, which keeps the main Luau chunk comfortably
--- below the 200-local compiler limit.
 local HighlightEnabled = false
 local NameTagsEnabled = false
 
 Builders.RoleEngine = function()
 
--- roles are taken from MM2's own data, not guessed from a knife showing up.
--- GetPlayerData runs once at boot. After that, only the known role events
--- (Fade, UpdatePlayerData, RoleSelect and RoundEndFade) can trigger updates.
--- There is no render loop, heartbeat scan or repeated descendant walk.
--- Equipment is only a quiet fallback for modified servers.
+-- no render loops and no heartbeat scans: one snapshot at boot, then only
+-- the game's own role events drive updates. equipment is a quiet fallback.
+-- upgraded for 1.0.2: boolean role fields get read too, GetPlayerData is
+-- retried after Fade because the round data lands a moment after the event,
+-- and a lazy four second rescan mops up stragglers while the round is live.
 
-local RoleByPlayer = {}          -- player -> role key
-local RoleFromPacket = {}        -- userid -> role key, filled by source 1
+local RoleByPlayer = {}
+local RoleFromPacket = {}
 local EspHighlights = {}
 local EspNameTags = {}
 local JoinedMidRound = {}
@@ -3678,13 +3541,9 @@ local RoundSheriffUserId = nil
 local GunWasDropped = false
 local ScanEveryone
 
--- 1.0.2: the role reveal banner. AnnounceSelfRole is declared here, before
--- CommitPacketRole is defined below, so the closure it creates can call the
--- real function once it exists further down without a stale reference.
 local AnnounceSelfRole
 local LastAnnouncedSelfRole = nil
 
--- role words the game uses, mapped onto our keys
 local RoleWordMap = {
     murderer = "Murderer", murder = "Murderer", killer = "Murderer",
     sheriff = "Sheriff", police = "Sheriff",
@@ -3718,6 +3577,37 @@ local function ResolvePlayerReference(RawValue)
     return nil
 end
 
+-- one entry of the data table can look like a string, a word field, or a
+-- pile of booleans: {Murderer = true}. read all three shapes.
+local function RoleFromInfoEntry(PlayerInfo)
+    if typeof(PlayerInfo) == "string" then
+        return NormaliseRoleWord(PlayerInfo)
+    end
+    if typeof(PlayerInfo) ~= "table" then
+        return nil
+    end
+
+    local WordRole = NormaliseRoleWord(PlayerInfo.Role or PlayerInfo.role or PlayerInfo.Team or PlayerInfo.PlayerRole)
+    if WordRole then
+        return WordRole
+    end
+
+    if PlayerInfo.Murderer == true or PlayerInfo.IsMurderer == true then
+        return "Murderer"
+    end
+    if PlayerInfo.Sheriff == true or PlayerInfo.IsSheriff == true then
+        return "Sheriff"
+    end
+    if PlayerInfo.Hero == true or PlayerInfo.IsHero == true then
+        return "Hero"
+    end
+    if PlayerInfo.Innocent == true or PlayerInfo.IsInnocent == true
+        or PlayerInfo.Dead == false or PlayerInfo.Alive == true then
+        return "Innocent"
+    end
+    return nil
+end
+
 local function CommitPacketRole(TargetPlayer, RoleKey)
     if not TargetPlayer or not RoleKey then
         return
@@ -3739,8 +3629,6 @@ local function CommitPacketRole(TargetPlayer, RoleKey)
     end
 end
 
--- MM2 sends a dictionary keyed by player name. This direct parser is both
--- more reliable and much cheaper than listening to every remote in the game.
 local function ConsumePlayerData(DataTable, SourceName)
     if typeof(DataTable) ~= "table" then
         return false
@@ -3749,13 +3637,7 @@ local function ConsumePlayerData(DataTable, SourceName)
     local FoundAnyRole = false
     for PlayerReference, PlayerInfo in pairs(DataTable) do
         local TargetPlayer = ResolvePlayerReference(PlayerReference)
-        local RoleKey
-
-        if typeof(PlayerInfo) == "table" then
-            RoleKey = NormaliseRoleWord(PlayerInfo.Role or PlayerInfo.role or PlayerInfo.Team)
-        else
-            RoleKey = NormaliseRoleWord(PlayerInfo)
-        end
+        local RoleKey = RoleFromInfoEntry(PlayerInfo)
 
         if TargetPlayer and RoleKey then
             CommitPacketRole(TargetPlayer, RoleKey)
@@ -3774,6 +3656,47 @@ local function QueueRoleRefresh()
         if CoreIsAlive and ScanEveryone then
             ScanEveryone()
         end
+    end)
+end
+
+-- GetPlayerData arrives a moment after the round-start event, so a single
+-- invoke can come back empty. retry a few times with a pause, give up quietly.
+local DataRetryRunning = false
+
+local function CollectGameDataRoles()
+    local GetPlayerDataRemote = ReplicatedStorageService:FindFirstChild("GetPlayerData", true)
+    if not GetPlayerDataRemote or not GetPlayerDataRemote:IsA("RemoteFunction") then
+        return false
+    end
+
+    local RequestSucceeded, DataTable = pcall(function()
+        return GetPlayerDataRemote:InvokeServer()
+    end)
+    if not RequestSucceeded then
+        return false
+    end
+
+    return ConsumePlayerData(DataTable, "GET PLAYER DATA")
+end
+
+local function ScheduleDataRetries()
+    if DataRetryRunning then
+        return
+    end
+    DataRetryRunning = true
+
+    task.spawn(function()
+        for _ = 1, 8 do
+            if not CoreIsAlive then
+                break
+            end
+            if CollectGameDataRoles() then
+                QueueRoleRefresh()
+                break
+            end
+            task.wait(1.5)
+        end
+        DataRetryRunning = false
     end)
 end
 
@@ -3796,9 +3719,14 @@ local function BindKnownRoleRemote(RemoteInstance)
 
     if IsDataEvent then
         RemoteInstance.OnClientEvent:Connect(function(DataTable)
-            if CoreIsAlive then
-                ConsumePlayerData(DataTable, "GAME EVENT")
-                QueueRoleRefresh()
+            if not CoreIsAlive then
+                return
+            end
+            local GotRoles = ConsumePlayerData(DataTable, "GAME EVENT")
+            QueueRoleRefresh()
+            -- Fade fires at round start; the full table often lands late
+            if not GotRoles then
+                ScheduleDataRetries()
             end
         end)
     elseif IsLocalRoleEvent then
@@ -3820,7 +3748,7 @@ local function BindKnownRoleRemote(RemoteInstance)
             ActiveRoleSource = "WAITING"
             RoundSheriffUserId = nil
             GunWasDropped = false
-            LastAnnouncedSelfRole = nil -- next round can announce a fresh role
+            LastAnnouncedSelfRole = nil
             table.clear(RoleFromPacket)
             table.clear(JoinedMidRound)
             QueueRoleRefresh()
@@ -3833,24 +3761,7 @@ for _, Descendant in ipairs(ReplicatedStorageService:GetDescendants()) do
 end
 ReplicatedStorageService.DescendantAdded:Connect(BindKnownRoleRemote)
 
--- one initial snapshot, later changes arrive through the events above
-local function CollectGameDataRoles()
-    local GetPlayerDataRemote = ReplicatedStorageService:FindFirstChild("GetPlayerData", true)
-    if not GetPlayerDataRemote or not GetPlayerDataRemote:IsA("RemoteFunction") then
-        return false
-    end
-
-    local RequestSucceeded, DataTable = pcall(function()
-        return GetPlayerDataRemote:InvokeServer()
-    end)
-    if not RequestSucceeded then
-        return false
-    end
-
-    return ConsumePlayerData(DataTable, "GET PLAYER DATA")
-end
-
--- ---- source 3: quiet fallback ----
+-- ---- equipment fallback ----
 local function EquipmentGuess(TargetPlayer)
     local Backpack = TargetPlayer:FindFirstChildOfClass("Backpack")
     local Character = TargetPlayer.Character
@@ -3871,13 +3782,9 @@ local function EquipmentGuess(TargetPlayer)
     return nil
 end
 
--- HERO TRACKING.
--- the role packet is sent once, at the start of the round, so an innocent
--- who later grabs the dropped gun still reads as "Innocent" forever. the
--- game itself never re-sends anything. so the pickup is tracked separately
--- and layered on top of whatever the packet said:
---   someone holds the gun + they are not the player the round started with
---   as sheriff  ->  Hero.
+-- hero tracking: the packet is sent once at round start, so an innocent who
+-- grabs the dropped gun would read Innocent forever. the pickup is layered
+-- on top: someone not-the-sheriff holding the gun is the hero
 local function CarriesTool(TargetPlayer, ToolName)
     local Backpack = TargetPlayer:FindFirstChildOfClass("Backpack")
     if Backpack and Backpack:FindFirstChild(ToolName) then
@@ -3892,18 +3799,13 @@ local function HoldsTheGun(TargetPlayer)
 end
 
 local function RefreshGunDropState()
-    -- must not be sticky: once the drop is gone the flag has to clear again,
-    -- a leftover "true" from an earlier round is what mislabelled the sheriff.
-    -- uses the same cached locator as the ESP, so it costs nothing.
+    -- must not stay sticky: once the drop is gone the flag clears again
     GunWasDropped = (LocateDroppedGun ~= nil) and (LocateDroppedGun() ~= nil)
 end
 
--- SHERIFF FIX.
--- the old order tested GunWasDropped before the actual role, so the real
--- sheriff holding their own gun got repainted as Hero. now the game's data
--- always wins: only an Innocent or Unknown can ever be promoted.
+-- the game's data always wins: only an Innocent or Unknown can be promoted,
+-- the round's real sheriff never gets repainted as a hero
 local function ApplyHeroOverride(TargetPlayer, BaseRole)
-    -- a role the game handed us is final, never argue with it
     if BaseRole == "Murderer" or BaseRole == "Hero" then
         return BaseRole
     end
@@ -3912,20 +3814,17 @@ local function ApplyHeroOverride(TargetPlayer, BaseRole)
         if RoundSheriffUserId == nil then
             RoundSheriffUserId = TargetPlayer.UserId
         end
-        return "Sheriff" -- the sheriff stays the sheriff, gun or no gun
+        return "Sheriff"
     end
 
-    -- from here on the player is Innocent or Unknown
     if not HoldsTheGun(TargetPlayer) then
         return BaseRole
     end
 
-    -- the round's sheriff can never be demoted by a stale reading
     if RoundSheriffUserId == TargetPlayer.UserId then
         return "Sheriff"
     end
 
-    -- an innocent carrying the gun is the hero
     return "Hero"
 end
 
@@ -3944,7 +3843,6 @@ local function ResolveRoleFor(TargetPlayer)
         return ApplyHeroOverride(TargetPlayer, GuessedRole)
     end
 
-    -- joined while the round was already running and nothing was handed out
     if JoinedMidRound[TargetPlayer] then
         return "Unknown"
     end
@@ -3956,7 +3854,6 @@ local function ResolveRoleFor(TargetPlayer)
     return "Unknown"
 end
 
--- the combat tab asks the role engine who the murderer is
 GetRoleOfPlayer = function(TargetPlayer)
     return RoleByPlayer[TargetPlayer]
 end
@@ -3987,7 +3884,6 @@ local function PaintEspFor(TargetPlayer, RoleKey)
 
     local RoleTheme = RoleThemes[RoleKey] or RoleThemes.Unknown
 
-    -- chams
     if HighlightEnabled then
         local RoleHighlight = EspHighlights[TargetPlayer]
         if not RoleHighlight or RoleHighlight.Parent ~= Character then
@@ -4009,7 +3905,6 @@ local function PaintEspFor(TargetPlayer, RoleKey)
         EspHighlights[TargetPlayer] = nil
     end
 
-    -- name + role tag
     if NameTagsEnabled then
         local AnchorPart = Character:FindFirstChild("Head") or Character:FindFirstChild("HumanoidRootPart")
         if AnchorPart then
@@ -4043,9 +3938,9 @@ local function PaintEspFor(TargetPlayer, RoleKey)
 
             local TagText = NameTag:FindFirstChild("TagText")
             if TagText then
-                -- nick and role share the role color, exactly as asked
                 TagText.TextColor3 = RoleTheme.Color
-                TagText.Text = TargetPlayer.Name .. "\n" .. RoleTheme.Label
+                TagText.Text = TargetPlayer.Name .. "
+" .. RoleTheme.Label
             end
         end
     elseif EspNameTags[TargetPlayer] then
@@ -4079,7 +3974,7 @@ ScanEveryone = function()
         end
     end
 
-    -- round is over once nobody holds an assigned role any more
+    -- nobody holds an assigned role any more: the round is over
     if RoundIsLive and AssignedCount == 0 then
         RoundIsLive = false
         ActiveRoleSource = "WAITING"
@@ -4161,7 +4056,17 @@ workspace.ChildAdded:Connect(function(NewChild)
     end
 end)
 
--- toggles finally get their real bodies
+-- lazy sweep while a round is live: catches anyone the events skipped over,
+-- runs every four seconds and costs next to nothing
+task.spawn(function()
+    while CoreIsAlive do
+        task.wait(4)
+        if CoreIsAlive and RoundIsLive then
+            ScanEveryone()
+        end
+    end
+end)
+
 ApplyHighlightState = function(NewState)
     HighlightEnabled = NewState
     if not NewState then
@@ -4194,8 +4099,6 @@ CleanupRoleEsp = function()
 end
 
 -- ---- role reveal banner ----
--- Slides down from the top of the screen with your role name and colour,
--- then clears itself off after four seconds. Pure UI, no gameplay effect.
 local SelfRoleBanner = Instance.new("CanvasGroup")
 SelfRoleBanner.Name = "SelfRoleBanner"
 SelfRoleBanner.AnchorPoint = Vector2.new(0.5, 0)
@@ -4247,7 +4150,6 @@ AnnounceSelfRole = function(RoleKey)
     SelfRoleBanner.GroupTransparency = 1
     Animate(SelfRoleBanner, TweenSlow, {GroupTransparency = 0, Position = UDim2.new(0.5, 0, 0, 26)})
 
-    -- four seconds on screen, then it clears itself
     task.delay(4, function()
         if CoreIsAlive and MyToken == BannerToken then
             Animate(SelfRoleBanner, TweenSlow, {GroupTransparency = 1, Position = UDim2.new(0.5, 0, 0, -90)})
@@ -4294,7 +4196,6 @@ ShowNotification = function(TitleText, BodyText, AccentColor)
     AccentColor = AccentColor or Palette.Accent
     NotificationCounter = NotificationCounter + 1
 
-    -- the slot keeps the layout stable while the card slides inside it
     local Slot = Instance.new("Frame")
     Slot.Name = "NotificationSlot"
     Slot.Size = UDim2.fromOffset(286, 64)
@@ -4349,7 +4250,6 @@ ShowNotification = function(TitleText, BodyText, AccentColor)
     CardBody.ZIndex = 61
     CardBody.Parent = Card
 
-    -- thin bar that drains, so the card never feels like it hangs
     local TimerBar = Instance.new("Frame")
     TimerBar.AnchorPoint = Vector2.new(0, 1)
     TimerBar.Size = UDim2.new(1, -20, 0, 2)
@@ -4450,10 +4350,7 @@ local function IsDroppedGunCandidate(GunObject)
         return false
     end
 
-    -- SHERIFF FALSE ALARM FIX.
-    -- When you receive the gun the tool lives inside your character, and MM2
-    -- also parks round objects near players. Anything owned by a player is not
-    -- a ground drop, so it can never raise the "gun dropped" alert.
+    -- anything owned by a player (character or backpack) is not a ground drop
     for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
         local OtherCharacter = OtherPlayer.Character
         if OtherCharacter and GunObject:IsDescendantOf(OtherCharacter) then
@@ -4465,7 +4362,6 @@ local function IsDroppedGunCandidate(GunObject)
         end
     end
 
-    -- a tool sitting in someone's hand is parented to their character
     if GunObject:IsA("Tool") and GunObject.Parent
         and GunObject.Parent:FindFirstChildOfClass("Humanoid") then
         return false
@@ -4476,7 +4372,7 @@ local function IsDroppedGunCandidate(GunObject)
         return false
     end
 
-    -- a real drop lies on the map, it is never welded to a character assembly
+    -- a real drop is never welded to a character assembly
     local AssemblyRoot = AnchorPart.AssemblyRootPart
     if AssemblyRoot and AssemblyRoot.Parent
         and AssemblyRoot.Parent:FindFirstChildOfClass("Humanoid") then
@@ -4506,8 +4402,8 @@ LocateDroppedGun = function()
     end
     CachedGunInstance = nil
 
-    -- One deep pass at startup handles scripts injected mid-round. New drops
-    -- are event-driven, so an empty workspace is never rescanned in a loop.
+    -- one deep pass at startup for scripts injected mid-round; after that
+    -- drops arrive through events and an empty workspace is never rescanned
     if not InitialGunSearchFinished then
         InitialGunSearchFinished = true
         for _, Descendant in ipairs(workspace:GetDescendants()) do
@@ -4605,7 +4501,6 @@ local function HandleGunPresence()
         GunIsOnGround = true
         ShowNotification("GUN DROPPED", "The sheriff's revolver hit the ground.", GunAccentColor)
 
-        -- the Extra tab can take it straight away
         if AutoGrabGunEnabled and TryAutoGrabGun then
             TryAutoGrabGun()
         end
@@ -4649,8 +4544,8 @@ workspace.DescendantRemoving:Connect(function(OldDescendant)
 end)
 
 -- ============ grab gun ============
--- One controlled move out and one move back. Repeating CFrame six times while
--- overlapping the gun used to inject a huge physics velocity into the body.
+-- one controlled move out, one move back; overlapping pivot spam used to
+-- inject a massive physics velocity into the body
 local GrabInProgress = false
 
 local function GetLocalRootPart()
@@ -4707,7 +4602,7 @@ RunGrabGun = function()
             end
             StopCharacterPhysics()
 
-            -- Put the feet on the pickup instead of placing the root inside it.
+            -- feet on the pickup, never the root inside it
             local PickupHeight = Humanoid
                 and math.max(2.5, Humanoid.HipHeight + (RootPart.Size.Y * 0.5) + 0.35)
                 or 3
@@ -4716,7 +4611,6 @@ RunGrabGun = function()
             StopCharacterPhysics()
             task.wait(0.12)
 
-            -- One explicit touch is enough on executors that expose the API.
             if TouchFunction then
                 TouchFunction(RootPart, AnchorPart, 0)
                 task.wait()
@@ -4725,7 +4619,7 @@ RunGrabGun = function()
             task.wait(0.18)
         end)
 
-        -- This cleanup runs even if firetouchinterest throws an executor error.
+        -- cleanup runs even if firetouchinterest throws
         if Character.Parent and RootPart.Parent == Character then
             StopCharacterPhysics()
             Character:PivotTo(ReturnPivot)
@@ -4751,7 +4645,6 @@ end
 end
 RunBuilder("GunSystem")
 
--- the Extra tab toggle routes back into the same grab routine
 TryAutoGrabGun = function()
     if not CoreIsAlive or not AutoGrabGunEnabled then
         return
@@ -4768,8 +4661,6 @@ TryAutoGrabGun = function()
 end
 
 -- ============ config binding ============
--- Each toggle row hands back a setter, so replaying a config drives the same
--- code path as a real tap instead of faking a click.
 CollectConfigSnapshot = function()
     return {
         Version = SCRIPT_VERSION_TAG,
@@ -4778,7 +4669,6 @@ CollectConfigSnapshot = function()
         GunEsp = GunEspEnabled,
         XRay = XRayEnabled,
         MurdererRadar = MurdererRadarEnabled,
-        DangerAlert = DangerAlertEnabled,
         WalkSpeed = DesiredWalkSpeed,
         JumpPower = DesiredJumpPower,
         Noclip = NoclipEnabled,
@@ -4792,7 +4682,7 @@ CollectConfigSnapshot = function()
         AimWallCheck = AimWallCheckEnabled,
         KnifeThrowButton = KnifeThrowButtonEnabled,
         AutoGrabGun = AutoGrabGunEnabled,
-        CoinCollector = CoinCollectorEnabled,
+        SpectateMurderer = SpectateMurdererEnabled,
         FieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or DEFAULT_FIELD_OF_VIEW,
     }
 end
@@ -4820,19 +4710,17 @@ ApplyConfigSnapshot = function(Snapshot)
     Setters.GunEsp(Snapshot.GunEsp == true)
     Setters.XRay(Snapshot.XRay == true)
     Setters.MurdererRadar(Snapshot.MurdererRadar == true)
-    Setters.DangerAlert(Snapshot.DangerAlert == true)
     Setters.Noclip(Snapshot.Noclip == true)
     Setters.InfiniteJump(Snapshot.InfiniteJump == true)
     Setters.AntiFling(Snapshot.AntiFling == true)
     Setters.SlowSpin(Snapshot.SlowSpin == true)
     Setters.KillAura(Snapshot.KillAura == true)
     Setters.LegitMode(Snapshot.LegitMode ~= false)
-    -- "Aimbot" is read for backward compatibility with pre-1.0.1 configs.
     Setters.Aimbot(Snapshot.PredictionAimbot == true or Snapshot.Aimbot == true)
     Setters.AimWallCheck(Snapshot.AimWallCheck ~= false)
     Setters.KnifeThrow(Snapshot.KnifeThrowButton == true)
     Setters.AutoGrabGun(Snapshot.AutoGrabGun == true)
-    Setters.CoinCollector(Snapshot.CoinCollector == true)
+    Setters.Spectate(Snapshot.SpectateMurderer == true)
 end
 
 -- ============ shutdown ============
@@ -4856,8 +4744,7 @@ local function ShutdownCore()
     AimbotEnabled = false
     AutoGrabGunEnabled = false
     MurdererRadarEnabled = false
-    DangerAlertEnabled = false
-    CoinCollectorEnabled = false
+    SpectateMurdererEnabled = false
     KnifeThrowButtonEnabled = false
 
     StopNoclip()
@@ -4869,11 +4756,9 @@ local function ShutdownCore()
     StopAimbot()
     DisconnectMovementConnections()
     if StopMurdererRadar then StopMurdererRadar() end
-    if StopDangerAlertLoop then StopDangerAlertLoop() end
-    if StopCoinCollectorLoop then StopCoinCollectorLoop() end
+    if StopSpectateLoop then StopSpectateLoop() end
     if HideKnifeThrowFab then HideKnifeThrowFab() end
 
-    -- give the camera back to the game
     if workspace.CurrentCamera then
         workspace.CurrentCamera.FieldOfView = DEFAULT_FIELD_OF_VIEW
     end
@@ -4882,7 +4767,7 @@ local function ShutdownCore()
         CleanupRoleEsp()
     end
 
-    -- hand the character back to the game with stock movement values
+    -- hand the character back with stock movement values
     local Humanoid = GetLocalHumanoid()
     if Humanoid then
         Humanoid.WalkSpeed = DEFAULT_WALK_SPEED
@@ -4904,7 +4789,6 @@ end
 
 ConfirmAccept.Activated:Connect(ShutdownCore)
 
--- panic exit skips the dialog entirely: one press, everything off
 RunPanicExit = function()
     CloseConfirm()
     ShutdownCore()
@@ -4917,6 +4801,4 @@ task.spawn(function()
     end
 end)
 
--- ============================================================
 -- by GachiRave · 1.0.2 · stable release
--- ============================================================
