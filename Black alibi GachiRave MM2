@@ -1,6 +1,5 @@
--- ============================================================
 -- Black Alibi MM2 | stable release
--- version : 1.0.1
+-- version : 1.0.2
 -- author  : by GachiRave
 -- target  : Murder Mystery 2
 --
@@ -11,6 +10,55 @@
 -- hero is layered on top: the round's sheriff is remembered from the
 -- data, and any other player holding the gun afterwards is painted Hero
 --
+-- ============================================================
+-- CHANGELOG 1.0.2
+-- ============================================================
+-- ADDED
+--   Server Hop on the Teleport tab. Pulls the public server list, drops any
+--   server that is full or the one you are already in, and jumps to a random
+--   survivor. Falls back to a same-place rejoin if the list can't be read.
+--
+--   Teleport To Sheriff and Teleport To Murderer. Both read the role table
+--   built by the role engine and drop you right behind the target: one stud
+--   for the sheriff, roughly two and a half for the murderer, close enough
+--   for a clean revolver shot without walking into melee range.
+--
+--   Murderer Radar on the ESP tab. A compass arrow plus a distance readout
+--   that tracks the murderer's position through walls once their role is
+--   known, so you always know which way to run.
+--
+--   Danger Alert on the ESP tab. Pulses a red screen border and fires a
+--   notification the moment the murderer closes inside eighteen studs.
+--
+--   Auto Collect Coins on the Extra tab. Touches every coin inside a short
+--   radius on its own, no more manual sweeping of the map.
+--
+--   Role Reveal banner. The instant the round hands you a role, a card
+--   slides down from the top of the screen with your role name and colour,
+--   then clears itself after four seconds.
+--
+--   Knife Throw button for the murderer. Turning it on drops a draggable
+--   button onto the screen; tapping it drives the knife into the nearest
+--   clear target, preferring the sheriff whenever one is out in the open,
+--   and the same line of sight check used by the aimbot keeps it from
+--   firing through walls.
+--
+-- FIXED
+--   Kill All could bring the whole client down on a full lobby. The sweep
+--   now runs on frame synced waits instead of raw timers, re-validates the
+--   knife and every target before each touch, and never touches a torn
+--   reference left behind by a player who disconnected mid sweep.
+--
+-- CHANGED
+--   Prediction Aimbot now solves its own lead time in two passes instead of
+--   one, closing the gap that under led targets sprinting across the screen.
+--
+--   Toggle rows and panel switches get a short press and release scale plus
+--   a small bounce on their ON / OFF pill, matching the buttons that already
+--   had that feedback.
+--
+--   Window height grew to fit the new controls without crowding the tabs
+--   that were already there.
 -- ============================================================
 -- CHANGELOG 1.0.1
 -- ============================================================
@@ -42,13 +90,13 @@
 
 -- ============ config ============
 local SCRIPT_BRAND_NAME = "Black Alibi MM2"
-local SCRIPT_VERSION_TAG = "1.0.1"
+local SCRIPT_VERSION_TAG = "1.0.2"
 local SCRIPT_AUTHOR_LINE = "by GachiRave"
 local SCRIPT_RELEASE_STATUS = "STABLE RELEASE"
 local TARGET_GAME_TITLE = "Murder Mystery 2"
 
 local WINDOW_WIDTH = 460
-local WINDOW_HEIGHT = 350
+local WINDOW_HEIGHT = 410
 local HEADER_HEIGHT = 42
 local SIDEBAR_WIDTH = 104
 
@@ -62,6 +110,7 @@ local LightingService = game:GetService("Lighting")
 local MarketplaceService = game:GetService("MarketplaceService")
 local ReplicatedStorageService = game:GetService("ReplicatedStorage")
 local TextService = game:GetService("TextService")
+local TeleportService = game:GetService("TeleportService")
 
 local LocalPlayer = PlayersService.LocalPlayer
 
@@ -110,6 +159,7 @@ local RoleThemes = {
 
 local TweenSlow = TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 local TweenFast = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TweenBounce = TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
 local CoreIsAlive = true
 
@@ -134,6 +184,39 @@ local function AddStroke(TargetInstance, StrokeColor, StrokeTransparency)
     Stroke.Thickness = 1
     Stroke.Parent = TargetInstance
     return Stroke
+end
+
+-- one drag handler for mouse and touch, shared by every floating surface
+local function MakeDraggable(TargetFrame)
+    local Dragging = false
+    local PointerOrigin, FrameOrigin
+
+    TargetFrame.InputBegan:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            Dragging = true
+            PointerOrigin = Input.Position
+            FrameOrigin = TargetFrame.Position
+            Input.Changed:Connect(function()
+                if Input.UserInputState == Enum.UserInputState.End then
+                    Dragging = false
+                end
+            end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(Input)
+        if not Dragging then
+            return
+        end
+        if Input.UserInputType ~= Enum.UserInputType.MouseMovement and Input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+        local Delta = Input.Position - PointerOrigin
+        TargetFrame.Position = UDim2.new(
+            FrameOrigin.X.Scale, FrameOrigin.X.Offset + Delta.X,
+            FrameOrigin.Y.Scale, FrameOrigin.Y.Offset + Delta.Y
+        )
+    end)
 end
 
 -- ============ root ============
@@ -186,39 +269,6 @@ local function SetBackdrop(ShouldShow)
             end
         end)
     end
-end
-
--- one drag handler for mouse and touch
-local function MakeDraggable(TargetFrame)
-    local Dragging = false
-    local PointerOrigin, FrameOrigin
-
-    TargetFrame.InputBegan:Connect(function(Input)
-        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
-            Dragging = true
-            PointerOrigin = Input.Position
-            FrameOrigin = TargetFrame.Position
-            Input.Changed:Connect(function()
-                if Input.UserInputState == Enum.UserInputState.End then
-                    Dragging = false
-                end
-            end)
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(Input)
-        if not Dragging then
-            return
-        end
-        if Input.UserInputType ~= Enum.UserInputType.MouseMovement and Input.UserInputType ~= Enum.UserInputType.Touch then
-            return
-        end
-        local Delta = Input.Position - PointerOrigin
-        TargetFrame.Position = UDim2.new(
-            FrameOrigin.X.Scale, FrameOrigin.X.Offset + Delta.X,
-            FrameOrigin.Y.Scale, FrameOrigin.Y.Offset + Delta.Y
-        )
-    end)
 end
 
 -- ============ window ============
@@ -562,6 +612,11 @@ local function CreateToggleRow(ParentPage, RowText, TopOffset, OnStateChanged)
     AddCorner(Row, 7)
     local RowStroke = AddStroke(Row, Palette.Stroke, 0.4)
 
+    -- 1.0.2: rows now have their own press feedback instead of only a colour
+    -- change, matching every button elsewhere in the interface.
+    local RowScale = Instance.new("UIScale")
+    RowScale.Parent = Row
+
     local RowLabel = Instance.new("TextLabel")
     RowLabel.Size = UDim2.new(1, -80, 1, 0)
     RowLabel.Position = UDim2.new(0, 12, 0, 0)
@@ -587,6 +642,9 @@ local function CreateToggleRow(ParentPage, RowText, TopOffset, OnStateChanged)
     StatePill.Parent = Row
     AddCorner(StatePill, 10)
 
+    local StatePillScale = Instance.new("UIScale")
+    StatePillScale.Parent = StatePill
+
     local IsEnabled = false
 
     -- visuals come straight off the boolean, never off the old text
@@ -597,7 +655,22 @@ local function CreateToggleRow(ParentPage, RowText, TopOffset, OnStateChanged)
         Animate(StatePill, TweenFast, {BackgroundColor3 = IsEnabled and Palette.Accent or Color3.fromRGB(38, 38, 45)})
         StatePill.Text = IsEnabled and "ON" or "OFF"
         StatePill.TextColor3 = IsEnabled and Color3.fromRGB(255, 255, 255) or Palette.TextFaint
+
+        -- small pop on the pill so a flip actually feels like a switch
+        StatePillScale.Scale = 0.7
+        Animate(StatePillScale, TweenBounce, {Scale = 1})
     end
+
+    Row.InputBegan:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            Animate(RowScale, TweenFast, {Scale = 0.97})
+        end
+    end)
+    Row.InputEnded:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            Animate(RowScale, TweenFast, {Scale = 1})
+        end
+    end)
 
     Row.Activated:Connect(function()
         IsEnabled = not IsEnabled
@@ -668,6 +741,14 @@ end)
 -- toggling off restores the map exactly as the game built it.
 local XRayEnabled = false
 local DisableXRay
+
+-- 1.0.2: the murderer radar and the danger alert live on this page too, both
+-- run off the role table the same way the rest of the ESP does.
+local MurdererRadarEnabled = false
+local StopMurdererRadar
+
+local DangerAlertEnabled = false
+local StopDangerAlertLoop
 
 Builders.XRay = function()
 local XRayOriginalTransparency = {}
@@ -750,10 +831,214 @@ end)
 end
 RunBuilder("XRay")
 
+-- ---- murderer radar ----
+-- Pure position math off the role table, never a raycast, so the compass
+-- keeps working through walls exactly like the highlight does.
+Builders.Radar = function()
+local RadarHolder = Instance.new("Frame")
+RadarHolder.Name = "MurdererRadar"
+RadarHolder.AnchorPoint = Vector2.new(0.5, 0)
+RadarHolder.Position = UDim2.new(0.5, 0, 0, 14)
+RadarHolder.Size = UDim2.fromOffset(120, 54)
+RadarHolder.BackgroundColor3 = Palette.Window
+RadarHolder.BackgroundTransparency = 0.15
+RadarHolder.BorderSizePixel = 0
+RadarHolder.Visible = false
+RadarHolder.ZIndex = 30
+RadarHolder.Parent = RootGui
+AddCorner(RadarHolder, 10)
+local RadarStroke = AddStroke(RadarHolder, Color3.fromRGB(255, 72, 72), 0.3)
+
+local RadarArrow = Instance.new("TextLabel")
+RadarArrow.Size = UDim2.fromOffset(40, 28)
+RadarArrow.AnchorPoint = Vector2.new(0.5, 0)
+RadarArrow.Position = UDim2.new(0.5, 0, 0, 4)
+RadarArrow.BackgroundTransparency = 1
+RadarArrow.Text = "▲"
+RadarArrow.TextColor3 = Color3.fromRGB(255, 72, 72)
+RadarArrow.Font = Enum.Font.Code
+RadarArrow.TextSize = 22
+RadarArrow.ZIndex = 31
+RadarArrow.Parent = RadarHolder
+
+local RadarDistanceLabel = Instance.new("TextLabel")
+RadarDistanceLabel.Size = UDim2.new(1, -8, 0, 16)
+RadarDistanceLabel.AnchorPoint = Vector2.new(0.5, 0)
+RadarDistanceLabel.Position = UDim2.new(0.5, 0, 0, 34)
+RadarDistanceLabel.BackgroundTransparency = 1
+RadarDistanceLabel.Text = "MURDERER · UNKNOWN"
+RadarDistanceLabel.TextColor3 = Palette.TextDim
+RadarDistanceLabel.Font = Enum.Font.Code
+RadarDistanceLabel.TextSize = 10
+RadarDistanceLabel.ZIndex = 31
+RadarDistanceLabel.Parent = RadarHolder
+
+local RadarConnection = nil
+
+local function FindMurdererRootForRadar()
+    if not GetRoleOfPlayer then
+        return nil
+    end
+    for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+        if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == "Murderer" then
+            local OtherCharacter = OtherPlayer.Character
+            local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+            if OtherRoot then
+                return OtherRoot
+            end
+        end
+    end
+    return nil
+end
+
+StopMurdererRadar = function()
+    if RadarConnection then
+        RadarConnection:Disconnect()
+        RadarConnection = nil
+    end
+    RadarHolder.Visible = false
+end
+
+local function StartRadarLoop()
+    if RadarConnection then
+        return
+    end
+    RadarHolder.Visible = true
+
+    RadarConnection = RunService.Heartbeat:Connect(function()
+        if not CoreIsAlive or not MurdererRadarEnabled then
+            return
+        end
+
+        local Character = LocalPlayer.Character
+        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+        local ActiveCamera = workspace.CurrentCamera
+        local MurdererRoot = FindMurdererRootForRadar()
+
+        if not MurdererRoot or not RootPart or not ActiveCamera then
+            RadarArrow.Rotation = 0
+            RadarDistanceLabel.Text = "MURDERER · UNKNOWN"
+            Animate(RadarStroke, TweenFast, {Transparency = 0.5})
+            return
+        end
+
+        local ToTarget = MurdererRoot.Position - RootPart.Position
+        local Distance = ToTarget.Magnitude
+        local CameraForward = ActiveCamera.CFrame.LookVector
+        local FlatToTarget = Vector3.new(ToTarget.X, 0, ToTarget.Z)
+        local FlatForward = Vector3.new(CameraForward.X, 0, CameraForward.Z)
+
+        if FlatToTarget.Magnitude > 0.01 and FlatForward.Magnitude > 0.01 then
+            local Cross = (FlatForward.X * FlatToTarget.Z) - (FlatForward.Z * FlatToTarget.X)
+            local Dot = (FlatForward.X * FlatToTarget.X) + (FlatForward.Z * FlatToTarget.Z)
+            RadarArrow.Rotation = math.deg(math.atan2(Cross, Dot))
+        end
+
+        RadarDistanceLabel.Text = "MURDERER · " .. math.floor(Distance) .. " STUDS"
+        Animate(RadarStroke, TweenFast, {Transparency = 0.15})
+    end)
+end
+
+Setters.MurdererRadar = CreateToggleRow(PageEsp, "MURDERER RADAR", 190, function(NewState)
+    MurdererRadarEnabled = NewState
+    if NewState then
+        StartRadarLoop()
+    else
+        StopMurdererRadar()
+    end
+end)
+end
+RunBuilder("Radar")
+
+-- ---- danger alert ----
+Builders.DangerAlert = function()
+local DANGER_RADIUS = 18
+
+local DangerOverlay = Instance.new("Frame")
+DangerOverlay.Name = "DangerOverlay"
+DangerOverlay.Size = UDim2.fromScale(1, 1)
+DangerOverlay.BackgroundTransparency = 1
+DangerOverlay.BorderSizePixel = 0
+DangerOverlay.Active = false
+DangerOverlay.ZIndex = 25
+DangerOverlay.Parent = RootGui
+
+local DangerStroke = Instance.new("UIStroke")
+DangerStroke.Thickness = 6
+DangerStroke.Color = Color3.fromRGB(255, 60, 60)
+DangerStroke.Transparency = 1
+DangerStroke.Parent = DangerOverlay
+
+local DangerConnection = nil
+local WasInDanger = false
+
+StopDangerAlertLoop = function()
+    if DangerConnection then
+        DangerConnection:Disconnect()
+        DangerConnection = nil
+    end
+    DangerStroke.Transparency = 1
+    WasInDanger = false
+end
+
+local function StartDangerAlertLoop()
+    if DangerConnection then
+        return
+    end
+
+    DangerConnection = RunService.Heartbeat:Connect(function()
+        if not CoreIsAlive or not DangerAlertEnabled then
+            return
+        end
+
+        local Character = LocalPlayer.Character
+        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+        if not RootPart or not GetRoleOfPlayer then
+            return
+        end
+
+        local InDangerNow = false
+        for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+            if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == "Murderer" then
+                local OtherCharacter = OtherPlayer.Character
+                local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+                if OtherRoot and (OtherRoot.Position - RootPart.Position).Magnitude <= DANGER_RADIUS then
+                    InDangerNow = true
+                    break
+                end
+            end
+        end
+
+        if InDangerNow and not WasInDanger then
+            WasInDanger = true
+            if ShowNotification then
+                ShowNotification("DANGER", "The murderer is close.", Color3.fromRGB(255, 72, 72))
+            end
+        elseif not InDangerNow then
+            WasInDanger = false
+        end
+
+        DangerStroke.Transparency = InDangerNow
+            and math.clamp(0.35 + (0.35 * math.sin(os.clock() * 6)), 0.2, 0.75)
+            or 1
+    end)
+end
+
+Setters.DangerAlert = CreateToggleRow(PageEsp, "DANGER ALERT", 228, function(NewState)
+    DangerAlertEnabled = NewState
+    if NewState then
+        StartDangerAlertLoop()
+    else
+        StopDangerAlertLoop()
+    end
+end)
+end
+RunBuilder("DangerAlert")
+
 -- where the roles are actually coming from right now
 local RoleSourceLabel = Instance.new("TextLabel")
 RoleSourceLabel.Size = UDim2.new(1, -28, 0, 14)
-RoleSourceLabel.Position = UDim2.new(0, 14, 0, 196)
+RoleSourceLabel.Position = UDim2.new(0, 14, 0, 266)
 RoleSourceLabel.BackgroundTransparency = 1
 RoleSourceLabel.Text = "SOURCE : WAITING"
 RoleSourceLabel.TextColor3 = Palette.TextFaint
@@ -1310,6 +1595,8 @@ local AimbotEnabled = false
 local StopKillAura
 local StopAimbot
 local AimWallCheckEnabled = true
+local KnifeThrowButtonEnabled = false
+local HideKnifeThrowFab
 
 -- the range slider used to live entirely inside the combat block, so the
 -- config had no way to read or restore it. it is shared now.
@@ -1378,6 +1665,9 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
     AddCorner(Row, 6)
     local RowStroke = AddStroke(Row, Palette.Stroke, 0.45)
 
+    local RowScale = Instance.new("UIScale")
+    RowScale.Parent = Row
+
     local RowLabel = Instance.new("TextLabel")
     RowLabel.Size = UDim2.new(1, -70, 1, 0)
     RowLabel.Position = UDim2.new(0, 10, 0, 0)
@@ -1403,6 +1693,9 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
     StatePill.Parent = Row
     AddCorner(StatePill, 9)
 
+    local StatePillScale = Instance.new("UIScale")
+    StatePillScale.Parent = StatePill
+
     local IsEnabled = false
 
     local function RenderState()
@@ -1411,7 +1704,21 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
         Animate(StatePill, TweenFast, {BackgroundColor3 = IsEnabled and Palette.Accent or Color3.fromRGB(40, 40, 47)})
         StatePill.Text = IsEnabled and "ON" or "OFF"
         StatePill.TextColor3 = IsEnabled and Color3.fromRGB(255, 255, 255) or Palette.TextFaint
+
+        StatePillScale.Scale = 0.7
+        Animate(StatePillScale, TweenBounce, {Scale = 1})
     end
+
+    Row.InputBegan:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            Animate(RowScale, TweenFast, {Scale = 0.97})
+        end
+    end)
+    Row.InputEnded:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            Animate(RowScale, TweenFast, {Scale = 1})
+        end
+    end)
 
     Row.Activated:Connect(function()
         IsEnabled = not IsEnabled
@@ -1434,7 +1741,7 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
 end
 
 -- ---------- murderer panel ----------
-local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 170)
+local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 214)
 
 local RangeLabel = Instance.new("TextLabel")
 RangeLabel.Size = UDim2.new(1, -80, 0, 14)
@@ -1566,8 +1873,9 @@ local function GetHeldKnife()
 end
 
 -- legit mode: refuse anything the player could not physically reach
--- one line of sight test shared by the kill aura and the sheriff aim.
--- both characters are excluded, so only real map geometry can block it.
+-- one line of sight test shared by the kill aura, the sheriff aim and the
+-- knife throw button. all three exclude both characters, so only real map
+-- geometry can ever block a shot.
 local function TargetIsVisible(OriginPosition, TargetPart)
     local RayParams = RaycastParams.new()
     -- older mobile executors still ship the Blacklist enum name
@@ -1691,10 +1999,14 @@ end)
 -- legit protection is on by default, so reflect that immediately
 Setters.LegitMode(true)
 
--- KILL ALL.
--- The aura waits for people to walk into range. This does the opposite: it
--- walks the knife to every living player one by one and puts you back where
--- you started, so a whole lobby goes down in a single press.
+-- KILL ALL, REBUILT FOR SAFETY.
+-- The previous version teleported and touched every player back to back on
+-- raw task.wait timers. On a full lobby the burst of PivotTo calls and
+-- firetouchinterest calls landed faster than the client could actually
+-- replicate them, and that overload is what took the whole game down. This
+-- version steps once per rendered frame, re-validates the knife and every
+-- target immediately before each touch, and never reuses a reference that
+-- might already be gone.
 local KillAllRunning = false
 
 local function RunKillAll()
@@ -1707,7 +2019,9 @@ local function RunKillAll()
     local TouchFunction = firetouchinterest or (syn and syn.firetouchinterest)
 
     if not Handle or not TouchFunction then
-        ShowNotification("KILL ALL", "You need the knife equipped for this.", Color3.fromRGB(255, 72, 72))
+        if ShowNotification then
+            ShowNotification("KILL ALL", "You need the knife equipped for this.", Color3.fromRGB(255, 72, 72))
+        end
         return
     end
 
@@ -1720,46 +2034,88 @@ local function RunKillAll()
     KillAllRunning = true
 
     task.spawn(function()
+        -- a fixed roster taken up front, a player leaving mid sweep can no
+        -- longer shift indices under the loop or hand it a torn reference
+        local Roster = {}
+        for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+            if OtherPlayer ~= LocalPlayer then
+                table.insert(Roster, OtherPlayer)
+            end
+        end
+
         local ReturnPivot = Character:GetPivot()
         local KillCount = 0
 
-        for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
-            if not CoreIsAlive or not KillAllRunning then
-                break
-            end
+        local SweepSucceeded, SweepError = pcall(function()
+            for _, OtherPlayer in ipairs(Roster) do
+                if not CoreIsAlive or not KillAllRunning then
+                    break
+                end
 
-            if OtherPlayer ~= LocalPlayer then
+                -- fetched fresh every loop: the knife can vanish mid sweep if
+                -- the round ends, and an old Handle reference is exactly what
+                -- used to hand firetouchinterest garbage to work with
+                local CurrentKnife = GetHeldKnife()
+                local CurrentHandle = CurrentKnife and CurrentKnife:FindFirstChild("Handle")
+                if not CurrentHandle or not CurrentHandle.Parent then
+                    break
+                end
+
+                if not Character.Parent or not RootPart.Parent then
+                    break
+                end
+
                 local OtherCharacter = OtherPlayer.Character
                 local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
                 local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
 
                 if OtherRoot and OtherHumanoid and OtherHumanoid.Health > 0 then
-                    -- stand just behind them so the touch always registers
-                    Character:PivotTo(OtherRoot.CFrame * CFrame.new(0, 0, 2))
-                    task.wait(0.08)
-
-                    pcall(function()
-                        TouchFunction(OtherRoot, Handle, 0)
-                        TouchFunction(OtherRoot, Handle, 1)
+                    local MoveSucceeded = pcall(function()
+                        Character:PivotTo(OtherRoot.CFrame * CFrame.new(0, 0, 2))
+                        RootPart.AssemblyLinearVelocity = Vector3.zero
+                        RootPart.AssemblyAngularVelocity = Vector3.zero
                     end)
 
-                    KillCount = KillCount + 1
-                    task.wait(0.1)
+                    -- frame synced, never faster than the client can replicate
+                    RunService.Heartbeat:Wait()
+
+                    if MoveSucceeded and OtherRoot.Parent then
+                        pcall(function()
+                            TouchFunction(OtherRoot, CurrentHandle, 0)
+                        end)
+                        RunService.Heartbeat:Wait()
+                        pcall(function()
+                            TouchFunction(OtherRoot, CurrentHandle, 1)
+                        end)
+                        KillCount = KillCount + 1
+                    end
+
+                    RunService.Heartbeat:Wait()
                 end
             end
-        end
+        end)
 
-        -- always go home, even if the sweep was cut short
-        if Character.Parent then
-            Character:PivotTo(ReturnPivot)
-            if RootPart.Parent then
+        -- always go home, even if the sweep threw or was cancelled
+        if Character.Parent and RootPart.Parent == Character then
+            pcall(function()
+                Character:PivotTo(ReturnPivot)
                 RootPart.AssemblyLinearVelocity = Vector3.zero
                 RootPart.AssemblyAngularVelocity = Vector3.zero
-            end
+            end)
         end
 
         KillAllRunning = false
-        ShowNotification("KILL ALL", "Swept " .. KillCount .. " players, back in place.", Color3.fromRGB(255, 72, 72))
+
+        if not ShowNotification then
+            return
+        end
+
+        if not SweepSucceeded then
+            warn("[Black Alibi] Kill All stopped early: " .. tostring(SweepError))
+            ShowNotification("KILL ALL", "Stopped early, back in place.", Color3.fromRGB(235, 180, 110))
+        else
+            ShowNotification("KILL ALL", "Swept " .. KillCount .. " players, back in place.", Color3.fromRGB(255, 72, 72))
+        end
     end)
 end
 
@@ -1801,8 +2157,143 @@ end)
 
 KillAllButton.Activated:Connect(RunKillAll)
 
+-- ---------- knife throw button ----------
+-- FindKnifeThrowTarget and RunKnifeThrow are defined in full before the
+-- floating button is built, so the button's click handler never needs a
+-- forward declared upvalue: everything it calls already exists.
+local function FindKnifeThrowTarget(RootPart)
+    local KNIFE_THROW_MAX_RANGE = 65
+
+    local BestSheriffPlayer, BestSheriffRoot, BestSheriffDistance
+    local BestAnyPlayer, BestAnyRoot, BestAnyDistance
+
+    for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+        if OtherPlayer ~= LocalPlayer then
+            local OtherCharacter = OtherPlayer.Character
+            local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+            local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
+
+            if OtherRoot and OtherHumanoid and OtherHumanoid.Health > 0 then
+                local Distance = (OtherRoot.Position - RootPart.Position).Magnitude
+                if Distance <= KNIFE_THROW_MAX_RANGE and TargetIsVisible(RootPart.Position, OtherRoot) then
+                    local RoleKey = GetRoleOfPlayer and GetRoleOfPlayer(OtherPlayer)
+
+                    if RoleKey == "Sheriff" and (not BestSheriffDistance or Distance < BestSheriffDistance) then
+                        BestSheriffPlayer, BestSheriffRoot, BestSheriffDistance = OtherPlayer, OtherRoot, Distance
+                    end
+                    if not BestAnyDistance or Distance < BestAnyDistance then
+                        BestAnyPlayer, BestAnyRoot, BestAnyDistance = OtherPlayer, OtherRoot, Distance
+                    end
+                end
+            end
+        end
+    end
+
+    -- the sheriff always wins the pick when one is out in the open
+    if BestSheriffRoot then
+        return BestSheriffPlayer, BestSheriffRoot
+    end
+    return BestAnyPlayer, BestAnyRoot
+end
+
+local function RunKnifeThrow()
+    local Knife = GetHeldKnife()
+    local Handle = Knife and Knife:FindFirstChild("Handle")
+    local TouchFunction = firetouchinterest or (syn and syn.firetouchinterest)
+    local Character = LocalPlayer.Character
+    local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+
+    if not Handle or not TouchFunction or not RootPart then
+        if ShowNotification then
+            ShowNotification("KNIFE THROW", "Equip the knife first.", Color3.fromRGB(255, 72, 72))
+        end
+        return
+    end
+
+    local TargetPlayer, TargetRoot = FindKnifeThrowTarget(RootPart)
+    if not TargetPlayer or not TargetRoot then
+        if ShowNotification then
+            ShowNotification("KNIFE THROW", "No clear target in range.", Color3.fromRGB(235, 180, 110))
+        end
+        return
+    end
+
+    pcall(function()
+        TouchFunction(TargetRoot, Handle, 0)
+        task.wait()
+        TouchFunction(TargetRoot, Handle, 1)
+    end)
+
+    if ShowNotification then
+        ShowNotification("KNIFE THROW", "Thrown at " .. TargetPlayer.Name .. ".", Color3.fromRGB(255, 120, 120))
+    end
+end
+
+local KnifeThrowFab = nil
+
+local function CreateKnifeThrowFab()
+    if KnifeThrowFab then
+        return KnifeThrowFab
+    end
+
+    local Fab = Instance.new("TextButton")
+    Fab.Name = "KnifeThrowFab"
+    Fab.AnchorPoint = Vector2.new(1, 1)
+    Fab.Size = UDim2.fromOffset(58, 58)
+    Fab.Position = UDim2.new(1, -22, 1, -140)
+    Fab.BackgroundColor3 = Color3.fromRGB(48, 26, 28)
+    Fab.Text = "THROW"
+    Fab.TextColor3 = Color3.fromRGB(255, 120, 120)
+    Fab.Font = Enum.Font.Code
+    Fab.TextSize = 11
+    Fab.AutoButtonColor = false
+    Fab.Active = true
+    Fab.Visible = false
+    Fab.ZIndex = 40
+    Fab.Parent = RootGui
+    AddCorner(Fab, 29)
+    AddStroke(Fab, Color3.fromRGB(255, 72, 72), 0.3)
+    MakeDraggable(Fab)
+
+    local FabScale = Instance.new("UIScale")
+    FabScale.Parent = Fab
+
+    Fab.InputBegan:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            Animate(FabScale, TweenFast, {Scale = 0.88})
+        end
+    end)
+    Fab.InputEnded:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+            Animate(FabScale, TweenFast, {Scale = 1})
+        end
+    end)
+
+    Fab.Activated:Connect(RunKnifeThrow)
+
+    KnifeThrowFab = Fab
+    return Fab
+end
+
+HideKnifeThrowFab = function()
+    KnifeThrowButtonEnabled = false
+    if KnifeThrowFab then
+        KnifeThrowFab.Visible = false
+    end
+end
+
+Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 170, function(NewState)
+    KnifeThrowButtonEnabled = NewState
+    if NewState then
+        local Fab = CreateKnifeThrowFab()
+        Fab.Visible = true
+    elseif KnifeThrowFab then
+        KnifeThrowFab.Visible = false
+    end
+end)
+
 -- ---------- sheriff panel ----------
-local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 212, 92)
+local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 256, 92)
 
 -- the aim only makes sense with the revolver actually equipped: a gun sitting
 -- in the backpack is not drawn, so the camera must stay free until you hold it
@@ -1887,6 +2378,10 @@ local function ClampHorizontalVector(VectorValue, MaximumLength)
     return HorizontalVector
 end
 
+-- 1.0.2: the lead time now solves against its own predicted distance instead
+-- of the target's current position. A single pass under led anyone sprinting
+-- straight across the screen because it measured distance before the lead was
+-- even applied. Two passes settle down fast and cost almost nothing.
 local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, TargetHumanoid, DeltaTime)
     local RawVelocity = TargetRoot.AssemblyLinearVelocity
     local PreviousVelocity = SmoothedVelocityByPlayer[TargetPlayer] or RawVelocity
@@ -1898,16 +2393,22 @@ local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, Ta
 
     local ActiveCamera = workspace.CurrentCamera
     local CameraPosition = ActiveCamera and ActiveCamera.CFrame.Position or TargetPart.Position
-    local Distance = (TargetPart.Position - CameraPosition).Magnitude
-
-    -- Half the measured round-trip ping approximates one-way replication delay.
-    local LeadTime = math.clamp(
-        (Distance / ASSUMED_SHOT_SPEED) + (GetNetworkLatencySeconds() * 0.5),
-        0.015,
-        MAX_LEAD_TIME
-    )
-
     local HorizontalVelocity = ClampHorizontalVector(SmoothedVelocity, 32)
+
+    local LeadTime = 0.05
+    for _ = 1, 2 do
+        local HorizontalLead = ClampHorizontalVector(HorizontalVelocity * LeadTime, MAX_HORIZONTAL_LEAD)
+        local PredictedFlatPosition = TargetPart.Position + HorizontalLead
+        local Distance = (PredictedFlatPosition - CameraPosition).Magnitude
+
+        -- Half the measured round-trip ping approximates one-way replication delay.
+        LeadTime = math.clamp(
+            (Distance / ASSUMED_SHOT_SPEED) + (GetNetworkLatencySeconds() * 0.5),
+            0.015,
+            MAX_LEAD_TIME
+        )
+    end
+
     local HorizontalLead = ClampHorizontalVector(HorizontalVelocity * LeadTime, MAX_HORIZONTAL_LEAD)
 
     local VerticalLead = 0
@@ -1982,6 +2483,9 @@ end
 RunBuilder("Combat")
 
 -- ============ extra page ============
+local CoinCollectorEnabled = false
+local StopCoinCollectorLoop
+
 Builders.Extra = function()
 local ExtraTitle = Instance.new("TextLabel")
 ExtraTitle.Size = UDim2.new(1, -28, 0, 20)
@@ -2006,11 +2510,94 @@ Setters.AutoGrabGun = CreateToggleRow(PageExtra, "AUTO GRAB GUN", 40, function(N
     end
 end)
 
+-- AUTO COLLECT COINS.
+-- Coins only need a touch, exactly like the gun does, so the same
+-- firetouchinterest trick reaches every coin inside a short radius without
+-- moving the character at all.
+Builders.CoinCollector = function()
+local CoinConnection = nil
+local COIN_COLLECT_RADIUS = 14
+local NextCoinScan = 0
+
+local function GetCoinContainer()
+    for _, FolderName in ipairs({"Map", "Maps", "Normal", "GameMap", "CurrentMap", "MapFolder"}) do
+        local Folder = workspace:FindFirstChild(FolderName)
+        if Folder then
+            local CoinsFolder = Folder:FindFirstChild("Coins", true)
+            if CoinsFolder then
+                return CoinsFolder
+            end
+        end
+    end
+    return workspace:FindFirstChild("Coins") or workspace
+end
+
+StopCoinCollectorLoop = function()
+    if CoinConnection then
+        CoinConnection:Disconnect()
+        CoinConnection = nil
+    end
+end
+
+local function StartCoinCollectorLoop()
+    if CoinConnection then
+        return
+    end
+
+    CoinConnection = RunService.Heartbeat:Connect(function()
+        if not CoreIsAlive or not CoinCollectorEnabled then
+            return
+        end
+        if os.clock() < NextCoinScan then
+            return
+        end
+        NextCoinScan = os.clock() + 0.15
+
+        local Character = LocalPlayer.Character
+        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+        if not RootPart then
+            return
+        end
+
+        local TouchFunction = firetouchinterest or (syn and syn.firetouchinterest)
+        if not TouchFunction then
+            return
+        end
+
+        local Container = GetCoinContainer()
+        for _, Descendant in ipairs(Container:GetDescendants()) do
+            if Descendant:IsA("BasePart") then
+                local LowerName = string.lower(Descendant.Name)
+                if string.find(LowerName, "coin", 1, true) then
+                    local Distance = (Descendant.Position - RootPart.Position).Magnitude
+                    if Distance <= COIN_COLLECT_RADIUS then
+                        pcall(function()
+                            TouchFunction(RootPart, Descendant, 0)
+                            TouchFunction(RootPart, Descendant, 1)
+                        end)
+                    end
+                end
+            end
+        end
+    end)
+end
+
+Setters.CoinCollector = CreateToggleRow(PageExtra, "AUTO COLLECT COINS", 78, function(NewState)
+    CoinCollectorEnabled = NewState
+    if NewState then
+        StartCoinCollectorLoop()
+    else
+        StopCoinCollectorLoop()
+    end
+end)
+end
+RunBuilder("CoinCollector")
+
 local ExtraBody = Instance.new("TextLabel")
-ExtraBody.Size = UDim2.new(1, -28, 0, 44)
-ExtraBody.Position = UDim2.new(0, 14, 0, 80)
+ExtraBody.Size = UDim2.new(1, -28, 0, 70)
+ExtraBody.Position = UDim2.new(0, 14, 0, 118)
 ExtraBody.BackgroundTransparency = 1
-ExtraBody.Text = "Picks the revolver up the moment it drops and puts you back where you were standing."
+ExtraBody.Text = "Auto Grab Gun collects the revolver the moment it drops and returns you to your spot. Auto Collect Coins keeps a short leash on you and touches every coin it finds nearby."
 ExtraBody.TextColor3 = Palette.TextFaint
 ExtraBody.Font = Enum.Font.Code
 ExtraBody.TextSize = 10
@@ -2111,9 +2698,129 @@ SetTeleportStatus = function(StatusText, StatusColor)
     Animate(TeleportStatusLabel, TweenFast, {TextTransparency = 0})
 end
 
-CreatePageButton(PageTeleport, "GRAB GUN", 44, true, function()
+-- SERVER HOP.
+-- Reads the public server list straight from the Roblox games API and jumps
+-- to a random server that is not full and is not the one you are already in.
+-- If the list can't be read at all, it falls back to a normal rejoin so the
+-- button never just does nothing.
+local function AttemptServerHop()
+    SetTeleportStatus("SEARCHING FOR A SERVER ...", Color3.fromRGB(150, 190, 255))
+
+    task.spawn(function()
+        local ServersUrl = "https://games.roblox.com/v1/games/" .. game.PlaceId ..
+            "/servers/Public?sortOrder=Asc&limit=100"
+
+        local RawResponse = nil
+        local FetchSucceeded = pcall(function()
+            RawResponse = game:HttpGet(ServersUrl)
+        end)
+
+        -- some mobile executors only expose the list under a request function
+        if not FetchSucceeded or not RawResponse then
+            local RequestFunction = http_request or request or (syn and syn.request)
+            if RequestFunction then
+                local AltSucceeded, AltResponse = pcall(function()
+                    return RequestFunction({Url = ServersUrl, Method = "GET"})
+                end)
+                if AltSucceeded and AltResponse and AltResponse.Body then
+                    RawResponse = AltResponse.Body
+                    FetchSucceeded = true
+                end
+            end
+        end
+
+        if not FetchSucceeded or not RawResponse then
+            SetTeleportStatus("SERVER LIST UNAVAILABLE · REJOINING", Color3.fromRGB(235, 180, 110))
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+            return
+        end
+
+        local HttpJson = game:GetService("HttpService")
+        local DecodeSucceeded, ServerData = pcall(function()
+            return HttpJson:JSONDecode(RawResponse)
+        end)
+
+        local CandidateServers = {}
+        if DecodeSucceeded and ServerData and ServerData.data then
+            for _, ServerEntry in ipairs(ServerData.data) do
+                if ServerEntry.id ~= game.JobId
+                    and type(ServerEntry.playing) == "number"
+                    and type(ServerEntry.maxPlayers) == "number"
+                    and ServerEntry.playing < ServerEntry.maxPlayers then
+                    table.insert(CandidateServers, ServerEntry)
+                end
+            end
+        end
+
+        if #CandidateServers == 0 then
+            SetTeleportStatus("NO OPEN SERVER FOUND · REJOINING", Color3.fromRGB(235, 180, 110))
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+            return
+        end
+
+        local ChosenServer = CandidateServers[math.random(1, #CandidateServers)]
+        SetTeleportStatus("HOPPING SERVER ...", Color3.fromRGB(120, 210, 140))
+
+        local TeleportSucceeded = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, ChosenServer.id, LocalPlayer)
+        end)
+
+        if not TeleportSucceeded then
+            SetTeleportStatus("SERVER HOP FAILED", Color3.fromRGB(235, 110, 110))
+        end
+    end)
+end
+
+CreatePageButton(PageTeleport, "SERVER HOP", 44, true, AttemptServerHop)
+
+CreatePageButton(PageTeleport, "GRAB GUN", 82, false, function()
     if RunGrabGun then
         RunGrabGun()
+    end
+end)
+
+-- teleports straight off the role table: same source the radar and the
+-- aimbot already trust, so all three agree on who is who
+local function FindPlayerWithRole(RoleKey)
+    if not GetRoleOfPlayer then
+        return nil
+    end
+    for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+        if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == RoleKey then
+            local OtherCharacter = OtherPlayer.Character
+            local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+            local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
+            if OtherRoot and OtherHumanoid and OtherHumanoid.Health > 0 then
+                return OtherPlayer, OtherRoot
+            end
+        end
+    end
+    return nil
+end
+
+CreatePageButton(PageTeleport, "TELEPORT TO SHERIFF", 120, false, function()
+    local _, SheriffRoot = FindPlayerWithRole("Sheriff")
+    if not SheriffRoot then
+        SetTeleportStatus("SHERIFF NOT FOUND", Color3.fromRGB(235, 110, 110))
+        return
+    end
+    if TeleportCharacterTo then
+        TeleportCharacterTo(SheriffRoot.CFrame * CFrame.new(0, 0, 1), "MOVED BEHIND THE SHERIFF")
+    end
+end)
+
+CreatePageButton(PageTeleport, "TELEPORT TO MURDERER", 158, false, function()
+    local _, MurdererRoot = FindPlayerWithRole("Murderer")
+    if not MurdererRoot then
+        SetTeleportStatus("MURDERER NOT FOUND", Color3.fromRGB(235, 110, 110))
+        return
+    end
+    if TeleportCharacterTo then
+        TeleportCharacterTo(MurdererRoot.CFrame * CFrame.new(0, 0, 2.5), "MOVED BEHIND THE MURDERER · REVOLVER RANGE")
     end
 end)
 
@@ -2219,7 +2926,7 @@ local function FindLobbyPivot()
     return nil
 end
 
-local function TeleportCharacterTo(TargetCFrame, SuccessText)
+TeleportCharacterTo = function(TargetCFrame, SuccessText)
     local Character = LocalPlayer.Character
     local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
     if not Character or not RootPart then
@@ -2236,7 +2943,7 @@ local function TeleportCharacterTo(TargetCFrame, SuccessText)
     SetTeleportStatus(SuccessText, Color3.fromRGB(120, 210, 140))
 end
 
-CreatePageButton(PageTeleport, "TELEPORT TO MAP", 86, false, function()
+CreatePageButton(PageTeleport, "TELEPORT TO MAP", 196, false, function()
     local MapPivot = FindRoundMapPivot()
     if not MapPivot then
         SetTeleportStatus("NO ACTIVE MAP RIGHT NOW", Color3.fromRGB(235, 110, 110))
@@ -2245,7 +2952,7 @@ CreatePageButton(PageTeleport, "TELEPORT TO MAP", 86, false, function()
     TeleportCharacterTo(MapPivot, "MOVED TO THE MAP")
 end)
 
-CreatePageButton(PageTeleport, "TELEPORT TO SPAWN", 128, false, function()
+CreatePageButton(PageTeleport, "TELEPORT TO SPAWN", 234, false, function()
     local LobbyPivot = FindLobbyPivot()
     if not LobbyPivot then
         SetTeleportStatus("SPAWN POINT NOT FOUND", Color3.fromRGB(235, 110, 110))
@@ -2256,9 +2963,9 @@ end)
 
 local TeleportHintLabel = Instance.new("TextLabel")
 TeleportHintLabel.Size = UDim2.new(1, -28, 0, 46)
-TeleportHintLabel.Position = UDim2.new(0, 14, 0, 172)
+TeleportHintLabel.Position = UDim2.new(0, 14, 0, 278)
 TeleportHintLabel.BackgroundTransparency = 1
-TeleportHintLabel.Text = "Grab Gun returns you to your original spot. Map and Spawn are one way jumps."
+TeleportHintLabel.Text = "Grab Gun and the role teleports return or drop you right on target. Map and Spawn are one way jumps. Server Hop leaves the server entirely."
 TeleportHintLabel.TextColor3 = Palette.TextFaint
 TeleportHintLabel.Font = Enum.Font.Code
 TeleportHintLabel.TextSize = 10
@@ -2339,7 +3046,7 @@ local UpdateTitle = Instance.new("TextLabel")
 UpdateTitle.Size = UDim2.new(1, -28, 0, 16)
 UpdateTitle.Position = UDim2.new(0, 14, 0, 178)
 UpdateTitle.BackgroundTransparency = 1
-UpdateTitle.Text = "UPDATE 1.0.1"
+UpdateTitle.Text = "UPDATE 1.0.2"
 UpdateTitle.TextColor3 = Color3.fromRGB(111, 161, 255)
 UpdateTitle.Font = Enum.Font.Code
 UpdateTitle.TextSize = 11
@@ -2348,14 +3055,16 @@ UpdateTitle.ZIndex = 4
 UpdateTitle.Parent = PageAuthor
 
 local UpdateNotes = Instance.new("TextLabel")
-UpdateNotes.Size = UDim2.new(1, -28, 0, 104)
+UpdateNotes.Size = UDim2.new(1, -28, 0, 130)
 UpdateNotes.Position = UDim2.new(0, 14, 0, 198)
 UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
-    "ADDED   Prediction Aimbot, Kill All, Auto Grab Gun",
-    "FIXED   Kill Aura range configs and wall checks",
-    "FIXED   startup stability and module isolation",
-    "CHANGED Black Alibi MM2 branding and combat layout",
+    "ADDED   Server Hop, Sheriff/Murderer teleports",
+    "ADDED   Murderer Radar, Danger Alert, Coin Collector",
+    "ADDED   Role Reveal banner, Knife Throw button",
+    "FIXED   Kill All no longer crashes the client",
+    "CHANGED Prediction Aimbot two pass lead solving",
+    "CHANGED Toggle and panel press feedback",
 }, "\n")
 UpdateNotes.TextColor3 = Palette.TextDim
 UpdateNotes.Font = Enum.Font.Code
@@ -2693,7 +3402,7 @@ PanicButton.AnchorPoint = Vector2.new(0, 1)
 PanicButton.Size = UDim2.new(1, -28, 0, 34)
 PanicButton.Position = UDim2.new(0, 14, 1, -10)
 PanicButton.BackgroundColor3 = Color3.fromRGB(48, 26, 28)
-PanicButton.Text = "PANIC EXIT"
+PanicButton.Text = "PANIC EXIT · INSTANT"
 PanicButton.TextColor3 = Color3.fromRGB(255, 120, 120)
 PanicButton.Font = Enum.Font.Code
 PanicButton.TextSize = 13
@@ -2717,9 +3426,6 @@ PanicButton.Activated:Connect(function()
         RunPanicExit()
     end
 end)
-
--- the config status line already sits above the button, so no extra hint here
-PanicButton.Text = "PANIC EXIT · INSTANT"
 end
 RunBuilder("Settings")
 
@@ -2972,6 +3678,12 @@ local RoundSheriffUserId = nil
 local GunWasDropped = false
 local ScanEveryone
 
+-- 1.0.2: the role reveal banner. AnnounceSelfRole is declared here, before
+-- CommitPacketRole is defined below, so the closure it creates can call the
+-- real function once it exists further down without a stale reference.
+local AnnounceSelfRole
+local LastAnnouncedSelfRole = nil
+
 -- role words the game uses, mapped onto our keys
 local RoleWordMap = {
     murderer = "Murderer", murder = "Murderer", killer = "Murderer",
@@ -3016,6 +3728,14 @@ local function CommitPacketRole(TargetPlayer, RoleKey)
     JoinedMidRound[TargetPlayer] = nil
     if RoleKey == "Sheriff" and RoundSheriffUserId == nil then
         RoundSheriffUserId = TargetPlayer.UserId
+    end
+
+    -- your own role gets the reveal banner, once per round
+    if TargetPlayer == LocalPlayer and RoleKey ~= LastAnnouncedSelfRole then
+        LastAnnouncedSelfRole = RoleKey
+        if AnnounceSelfRole then
+            AnnounceSelfRole(RoleKey)
+        end
     end
 end
 
@@ -3100,6 +3820,7 @@ local function BindKnownRoleRemote(RemoteInstance)
             ActiveRoleSource = "WAITING"
             RoundSheriffUserId = nil
             GunWasDropped = false
+            LastAnnouncedSelfRole = nil -- next round can announce a fresh role
             table.clear(RoleFromPacket)
             table.clear(JoinedMidRound)
             QueueRoleRefresh()
@@ -3364,6 +4085,7 @@ ScanEveryone = function()
         ActiveRoleSource = "WAITING"
         RoundSheriffUserId = nil
         GunWasDropped = false
+        LastAnnouncedSelfRole = nil
         table.clear(RoleFromPacket)
         table.clear(JoinedMidRound)
     end
@@ -3469,6 +4191,68 @@ CleanupRoleEsp = function()
     for TargetPlayer in pairs(RoleByPlayer) do
         DestroyEspFor(TargetPlayer)
     end
+end
+
+-- ---- role reveal banner ----
+-- Slides down from the top of the screen with your role name and colour,
+-- then clears itself off after four seconds. Pure UI, no gameplay effect.
+local SelfRoleBanner = Instance.new("CanvasGroup")
+SelfRoleBanner.Name = "SelfRoleBanner"
+SelfRoleBanner.AnchorPoint = Vector2.new(0.5, 0)
+SelfRoleBanner.Position = UDim2.new(0.5, 0, 0, -90)
+SelfRoleBanner.Size = UDim2.fromOffset(280, 74)
+SelfRoleBanner.BackgroundColor3 = Palette.Window
+SelfRoleBanner.BorderSizePixel = 0
+SelfRoleBanner.GroupTransparency = 1
+SelfRoleBanner.ZIndex = 45
+SelfRoleBanner.Parent = RootGui
+AddCorner(SelfRoleBanner, 12)
+local SelfRoleBannerStroke = AddStroke(SelfRoleBanner, Palette.Stroke, 0.3)
+
+local SelfRoleCaption = Instance.new("TextLabel")
+SelfRoleCaption.Size = UDim2.new(1, -20, 0, 16)
+SelfRoleCaption.Position = UDim2.new(0, 10, 0, 10)
+SelfRoleCaption.BackgroundTransparency = 1
+SelfRoleCaption.Text = "YOUR ROLE THIS ROUND"
+SelfRoleCaption.TextColor3 = Palette.TextFaint
+SelfRoleCaption.Font = Enum.Font.Code
+SelfRoleCaption.TextSize = 10
+SelfRoleCaption.ZIndex = 46
+SelfRoleCaption.Parent = SelfRoleBanner
+
+local SelfRoleValue = Instance.new("TextLabel")
+SelfRoleValue.Size = UDim2.new(1, -20, 0, 34)
+SelfRoleValue.Position = UDim2.new(0, 10, 0, 28)
+SelfRoleValue.BackgroundTransparency = 1
+SelfRoleValue.Text = "INNOCENT"
+SelfRoleValue.TextColor3 = Color3.fromRGB(88, 220, 124)
+SelfRoleValue.Font = Enum.Font.Code
+SelfRoleValue.TextSize = 24
+SelfRoleValue.TextXAlignment = Enum.TextXAlignment.Left
+SelfRoleValue.ZIndex = 46
+SelfRoleValue.Parent = SelfRoleBanner
+
+local BannerToken = 0
+
+AnnounceSelfRole = function(RoleKey)
+    local RoleTheme = RoleThemes[RoleKey] or RoleThemes.Unknown
+    SelfRoleValue.Text = RoleTheme.Label
+    SelfRoleValue.TextColor3 = RoleTheme.Color
+    Animate(SelfRoleBannerStroke, TweenFast, {Color = RoleTheme.Color})
+
+    BannerToken = BannerToken + 1
+    local MyToken = BannerToken
+
+    SelfRoleBanner.Position = UDim2.new(0.5, 0, 0, -90)
+    SelfRoleBanner.GroupTransparency = 1
+    Animate(SelfRoleBanner, TweenSlow, {GroupTransparency = 0, Position = UDim2.new(0.5, 0, 0, 26)})
+
+    -- four seconds on screen, then it clears itself
+    task.delay(4, function()
+        if CoreIsAlive and MyToken == BannerToken then
+            Animate(SelfRoleBanner, TweenSlow, {GroupTransparency = 1, Position = UDim2.new(0.5, 0, 0, -90)})
+        end
+    end)
 end
 
 StartRoleEngine = function()
@@ -3993,6 +4777,8 @@ CollectConfigSnapshot = function()
         NameTags = NameTagsEnabled,
         GunEsp = GunEspEnabled,
         XRay = XRayEnabled,
+        MurdererRadar = MurdererRadarEnabled,
+        DangerAlert = DangerAlertEnabled,
         WalkSpeed = DesiredWalkSpeed,
         JumpPower = DesiredJumpPower,
         Noclip = NoclipEnabled,
@@ -4000,11 +4786,13 @@ CollectConfigSnapshot = function()
         AntiFling = AntiFlingEnabled,
         SlowSpin = SpinEnabled,
         KillAura = KillAuraEnabled,
-        KillAuraRange = KillAuraRange, -- 1.0.1: this was missing before
+        KillAuraRange = KillAuraRange,
         LegitMode = LegitModeEnabled,
         PredictionAimbot = AimbotEnabled,
         AimWallCheck = AimWallCheckEnabled,
+        KnifeThrowButton = KnifeThrowButtonEnabled,
         AutoGrabGun = AutoGrabGunEnabled,
+        CoinCollector = CoinCollectorEnabled,
         FieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or DEFAULT_FIELD_OF_VIEW,
     }
 end
@@ -4031,6 +4819,8 @@ ApplyConfigSnapshot = function(Snapshot)
     Setters.NameTags(Snapshot.NameTags == true)
     Setters.GunEsp(Snapshot.GunEsp == true)
     Setters.XRay(Snapshot.XRay == true)
+    Setters.MurdererRadar(Snapshot.MurdererRadar == true)
+    Setters.DangerAlert(Snapshot.DangerAlert == true)
     Setters.Noclip(Snapshot.Noclip == true)
     Setters.InfiniteJump(Snapshot.InfiniteJump == true)
     Setters.AntiFling(Snapshot.AntiFling == true)
@@ -4040,7 +4830,9 @@ ApplyConfigSnapshot = function(Snapshot)
     -- "Aimbot" is read for backward compatibility with pre-1.0.1 configs.
     Setters.Aimbot(Snapshot.PredictionAimbot == true or Snapshot.Aimbot == true)
     Setters.AimWallCheck(Snapshot.AimWallCheck ~= false)
+    Setters.KnifeThrow(Snapshot.KnifeThrowButton == true)
     Setters.AutoGrabGun(Snapshot.AutoGrabGun == true)
+    Setters.CoinCollector(Snapshot.CoinCollector == true)
 end
 
 -- ============ shutdown ============
@@ -4063,6 +4855,11 @@ local function ShutdownCore()
     KillAuraEnabled = false
     AimbotEnabled = false
     AutoGrabGunEnabled = false
+    MurdererRadarEnabled = false
+    DangerAlertEnabled = false
+    CoinCollectorEnabled = false
+    KnifeThrowButtonEnabled = false
+
     StopNoclip()
     ClearGunEsp()
     DisableXRay()
@@ -4071,6 +4868,10 @@ local function ShutdownCore()
     StopKillAura()
     StopAimbot()
     DisconnectMovementConnections()
+    if StopMurdererRadar then StopMurdererRadar() end
+    if StopDangerAlertLoop then StopDangerAlertLoop() end
+    if StopCoinCollectorLoop then StopCoinCollectorLoop() end
+    if HideKnifeThrowFab then HideKnifeThrowFab() end
 
     -- give the camera back to the game
     if workspace.CurrentCamera then
@@ -4117,5 +4918,5 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- by GachiRave · 1.0.1 · stable release
+-- by GachiRave · 1.0.2 · stable release
 -- ============================================================
