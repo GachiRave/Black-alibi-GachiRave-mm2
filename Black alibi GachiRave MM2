@@ -1,3 +1,4 @@
+
 -- Black Alibi MM2 | stable release
 -- version : 1.0.2
 -- author  : by GachiRave
@@ -2934,8 +2935,7 @@ UpdateNotes.Text = table.concat({
     "CHANGED  Radar needle: fixed math, smooth sweep, killer name",
     "CHANGED  Role reader: boolean roles, retries after Fade",
     "CHANGED  Knife throw equips first and aims at the torso",
-}, "
-")
+}, string.char(10))
 UpdateNotes.TextColor3 = Palette.TextDim
 UpdateNotes.Font = Enum.Font.Code
 UpdateNotes.TextSize = 10
@@ -3000,7 +3000,7 @@ local function ListSavedConfigs()
         local Ok, Files = pcall(FolderList, CONFIG_FOLDER)
         if Ok and Files then
             for _, FilePath in ipairs(Files) do
-                local Name = string.match(FilePath, "([^/\]+)%.json$")
+                local Name = string.match(FilePath, "([^/" .. string.char(92) .. "]+)%.json$")
                 if Name then
                     table.insert(Names, Name)
                 end
@@ -3939,8 +3939,7 @@ local function PaintEspFor(TargetPlayer, RoleKey)
             local TagText = NameTag:FindFirstChild("TagText")
             if TagText then
                 TagText.TextColor3 = RoleTheme.Color
-                TagText.Text = TargetPlayer.Name .. "
-" .. RoleTheme.Label
+                TagText.Text = TargetPlayer.Name .. string.char(10) .. RoleTheme.Label
             end
         end
     elseif EspNameTags[TargetPlayer] then
@@ -4801,4 +4800,4 @@ task.spawn(function()
     end
 end)
 
--- by GachiRave · 1.0.2 · stable release
+-- by GachiRave · 1.0.2 · stable release`;
