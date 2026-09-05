@@ -1,4 +1,3 @@
-
 -- Black Alibi MM2 | stable release
 -- version : 1.0.2
 -- author  : by GachiRave
@@ -16,7 +15,7 @@ local SCRIPT_RELEASE_STATUS = "STABLE RELEASE"
 local TARGET_GAME_TITLE = "Murder Mystery 2"
 
 local WINDOW_WIDTH = 460
-local WINDOW_HEIGHT = 410
+local WINDOW_HEIGHT = 380 -- trimmed so the header stays reachable on short phone screens
 local HEADER_HEIGHT = 42
 local SIDEBAR_WIDTH = 104
 
@@ -652,6 +651,11 @@ local DisableXRay
 local MurdererRadarEnabled = false
 local StopMurdererRadar
 
+-- your own role used to pop up on its own as a timed banner. it is a plain
+-- toggle now: turn it on and a small card stays on screen with your role.
+local MyRoleHudEnabled = false
+local ApplyMyRoleHudState
+
 Builders.XRay = function()
 local XRayOriginalTransparency = {}
 local XRayDescendantConnection = nil
@@ -887,10 +891,18 @@ end)
 end
 RunBuilder("Radar")
 
+-- own role readout, driven by the role engine further down
+Setters.MyRole = CreateToggleRow(PageEsp, "MY ROLE", 228, function(NewState)
+    MyRoleHudEnabled = NewState
+    if ApplyMyRoleHudState then
+        ApplyMyRoleHudState(NewState)
+    end
+end)
+
 -- where the roles are coming from right now
 local RoleSourceLabel = Instance.new("TextLabel")
 RoleSourceLabel.Size = UDim2.new(1, -28, 0, 14)
-RoleSourceLabel.Position = UDim2.new(0, 14, 0, 232)
+RoleSourceLabel.Position = UDim2.new(0, 14, 0, 266)
 RoleSourceLabel.BackgroundTransparency = 1
 RoleSourceLabel.Text = "SOURCE : WAITING"
 RoleSourceLabel.TextColor3 = Palette.TextFaint
@@ -1573,11 +1585,11 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
 end
 
 -- ---------- murderer panel ----------
-local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 214)
+local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 32, 202)
 
 local RangeLabel = Instance.new("TextLabel")
-RangeLabel.Size = UDim2.new(1, -80, 0, 14)
-RangeLabel.Position = UDim2.new(0, 10, 0, 64)
+RangeLabel.Size = UDim2.new(1, -78, 0, 14)
+RangeLabel.Position = UDim2.new(0, 10, 0, 62)
 RangeLabel.BackgroundTransparency = 1
 RangeLabel.Text = "RANGE"
 RangeLabel.TextColor3 = Color3.fromRGB(196, 196, 206)
@@ -1587,10 +1599,11 @@ RangeLabel.TextXAlignment = Enum.TextXAlignment.Left
 RangeLabel.ZIndex = 5
 RangeLabel.Parent = MurdererPanel
 
+-- kept narrow and pulled further in: at 52px it clipped the panel edge
 local RangeValueBox = Instance.new("TextBox")
 RangeValueBox.AnchorPoint = Vector2.new(1, 0)
-RangeValueBox.Size = UDim2.fromOffset(52, 20)
-RangeValueBox.Position = UDim2.new(1, -10, 0, 61)
+RangeValueBox.Size = UDim2.fromOffset(44, 19)
+RangeValueBox.Position = UDim2.new(1, -12, 0, 60)
 RangeValueBox.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
 RangeValueBox.Text = tostring(KillAuraRange)
 RangeValueBox.TextColor3 = Palette.TextMain
@@ -1604,7 +1617,7 @@ AddStroke(RangeValueBox, Palette.Stroke, 0.45)
 
 local RangeTrack = Instance.new("Frame")
 RangeTrack.Size = UDim2.new(1, -20, 0, 6)
-RangeTrack.Position = UDim2.new(0, 10, 0, 86)
+RangeTrack.Position = UDim2.new(0, 10, 0, 82)
 RangeTrack.BackgroundColor3 = Color3.fromRGB(40, 40, 47)
 RangeTrack.BorderSizePixel = 0
 RangeTrack.ZIndex = 5
@@ -1818,7 +1831,7 @@ local function StartKillAura()
     end)
 end
 
-Setters.KillAura = CreatePanelToggle(MurdererPanel, "KILL AURA", 32, function(NewState)
+Setters.KillAura = CreatePanelToggle(MurdererPanel, "KILL AURA", 30, function(NewState)
     KillAuraEnabled = NewState
     if NewState then
         StartKillAura()
@@ -1827,7 +1840,7 @@ Setters.KillAura = CreatePanelToggle(MurdererPanel, "KILL AURA", 32, function(Ne
     end
 end)
 
-Setters.LegitMode = CreatePanelToggle(MurdererPanel, "LEGIT · NO WALL HITS", 98, function(NewState)
+Setters.LegitMode = CreatePanelToggle(MurdererPanel, "LEGIT · NO WALL HITS", 94, function(NewState)
     LegitModeEnabled = NewState
 end)
 
@@ -1946,7 +1959,7 @@ end
 
 local KillAllButton = Instance.new("TextButton")
 KillAllButton.Size = UDim2.new(1, -20, 0, 30)
-KillAllButton.Position = UDim2.new(0, 10, 0, 134)
+KillAllButton.Position = UDim2.new(0, 10, 0, 128)
 KillAllButton.BackgroundColor3 = Color3.fromRGB(48, 26, 28)
 KillAllButton.Text = "KILL ALL"
 KillAllButton.TextColor3 = Color3.fromRGB(255, 120, 120)
@@ -2177,7 +2190,7 @@ HideKnifeThrowFab = function()
     end
 end
 
-Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 170, function(NewState)
+Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 162, function(NewState)
     KnifeThrowButtonEnabled = NewState
     if NewState then
         local Fab = CreateKnifeThrowFab()
@@ -2188,7 +2201,7 @@ Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 170,
 end)
 
 -- ---------- sheriff panel ----------
-local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 256, 92)
+local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 242, 88)
 
 -- the aim only runs with the revolver actually in hand
 local function GunIsEquipped()
@@ -2349,7 +2362,7 @@ local function StartAimbot()
     end)
 end
 
-Setters.Aimbot = CreatePanelToggle(SheriffPanel, "PREDICTION AIMBOT · MOBILE LOCK", 25, function(NewState)
+Setters.Aimbot = CreatePanelToggle(SheriffPanel, "PREDICTION AIMBOT · MOBILE LOCK", 24, function(NewState)
     AimbotEnabled = NewState
     if NewState then
         StartAimbot()
@@ -2358,7 +2371,7 @@ Setters.Aimbot = CreatePanelToggle(SheriffPanel, "PREDICTION AIMBOT · MOBILE LO
     end
 end)
 
-Setters.AimWallCheck = CreatePanelToggle(SheriffPanel, "LEGIT · NO WALL AIM", 57, function(NewState)
+Setters.AimWallCheck = CreatePanelToggle(SheriffPanel, "LEGIT · NO WALL AIM", 56, function(NewState)
     AimWallCheckEnabled = NewState
 end)
 
@@ -2368,9 +2381,8 @@ end
 RunBuilder("Combat")
 
 -- ============ extra page ============
--- the coin collector is gone by request; its slot is now a murderer spectate
-local SpectateMurdererEnabled = false
-local StopSpectateLoop
+local AutoEscapeEnabled = false
+local StopAutoEscapeLoop
 
 Builders.Extra = function()
 local ExtraTitle = Instance.new("TextLabel")
@@ -2393,90 +2405,144 @@ Setters.AutoGrabGun = CreateToggleRow(PageExtra, "AUTO GRAB GUN", 40, function(N
     end
 end)
 
--- SPECTATE MURDERER.
--- the camera's subject jumps to the killer's humanoid, so you watch them
--- through walls the whole round. killer dies or the toggle goes off and the
--- camera comes straight back to you.
-Builders.Spectate = function()
-local SpectateConnection = nil
+-- AUTO ESCAPE.
+-- the killer gets inside sixteen studs and you get thrown clear of him.
+-- the escape vector is raycast first, so you land in open floor instead of
+-- inside a wall, and a cooldown keeps it from stuttering you across the map.
+Builders.AutoEscape = function()
+local EscapeConnection = nil
+local ESCAPE_TRIGGER_RADIUS = 16
+local ESCAPE_DISTANCE = 60
+local ESCAPE_COOLDOWN = 2.5
+local NextEscapeTime = 0
 
-local function RestoreOwnCamera()
-    local ActiveCamera = workspace.CurrentCamera
-    local OwnHumanoid = GetLocalHumanoid()
-    if ActiveCamera then
-        ActiveCamera.CameraType = Enum.CameraType.Custom
-        if OwnHumanoid then
-            ActiveCamera.CameraSubject = OwnHumanoid
-        end
-    end
-end
-
-StopSpectateLoop = function()
-    if SpectateConnection then
-        SpectateConnection:Disconnect()
-        SpectateConnection = nil
-    end
-    RestoreOwnCamera()
-end
-
-local function StartSpectateLoop()
-    if SpectateConnection then
-        return
+local function FindNearestMurderer(RootPart)
+    if not GetRoleOfPlayer then
+        return nil, nil
     end
 
-    SpectateConnection = RunService.Heartbeat:Connect(function()
-        if not CoreIsAlive or not SpectateMurdererEnabled then
-            return
-        end
-
-        local ActiveCamera = workspace.CurrentCamera
-        if not ActiveCamera or not GetRoleOfPlayer then
-            return
-        end
-
-        local KillerHumanoid = nil
-        for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
-            if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == "Murderer" then
-                local OtherCharacter = OtherPlayer.Character
-                local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
-                if OtherHumanoid and OtherHumanoid.Health > 0 then
-                    KillerHumanoid = OtherHumanoid
-                    break
+    local ClosestPlayer, ClosestRoot, ClosestDistance
+    for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+        if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == "Murderer" then
+            local OtherCharacter = OtherPlayer.Character
+            local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+            local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
+            if OtherRoot and OtherHumanoid and OtherHumanoid.Health > 0 then
+                local Distance = (OtherRoot.Position - RootPart.Position).Magnitude
+                if not ClosestDistance or Distance < ClosestDistance then
+                    ClosestPlayer, ClosestRoot, ClosestDistance = OtherPlayer, OtherRoot, Distance
                 end
             end
         end
+    end
+    return ClosestRoot, ClosestDistance
+end
 
-        if KillerHumanoid then
-            if ActiveCamera.CameraSubject ~= KillerHumanoid then
-                ActiveCamera.CameraType = Enum.CameraType.Custom
-                ActiveCamera.CameraSubject = KillerHumanoid
-            end
-        else
-            -- killer left or died: hand the camera back before it gets stuck
-            local OwnHumanoid = GetLocalHumanoid()
-            if OwnHumanoid and ActiveCamera.CameraSubject ~= OwnHumanoid then
-                ActiveCamera.CameraSubject = OwnHumanoid
-            end
+-- walk the escape ray out and stop short of whatever it hits
+local function SolveEscapePosition(RootPart, MurdererRoot)
+    local AwayVector = RootPart.Position - MurdererRoot.Position
+    AwayVector = Vector3.new(AwayVector.X, 0, AwayVector.Z)
+    if AwayVector.Magnitude < 0.5 then
+        AwayVector = RootPart.CFrame.LookVector * -1
+    end
+    AwayVector = AwayVector.Unit
+
+    local RayParams = RaycastParams.new()
+    local FilterSet = pcall(function()
+        RayParams.FilterType = Enum.RaycastFilterType.Exclude
+    end)
+    if not FilterSet then
+        pcall(function()
+            RayParams.FilterType = Enum.RaycastFilterType.Blacklist
+        end)
+    end
+
+    local Excluded = {}
+    if LocalPlayer.Character then
+        table.insert(Excluded, LocalPlayer.Character)
+    end
+    if MurdererRoot.Parent then
+        table.insert(Excluded, MurdererRoot.Parent)
+    end
+    RayParams.FilterDescendantsInstances = Excluded
+    RayParams.IgnoreWater = true
+
+    local TravelDistance = ESCAPE_DISTANCE
+    local WallHit = nil
+    pcall(function()
+        WallHit = workspace:Raycast(RootPart.Position, AwayVector * ESCAPE_DISTANCE, RayParams)
+    end)
+    if WallHit then
+        -- stop a few studs short of the wall we would have gone through
+        TravelDistance = math.max((WallHit.Position - RootPart.Position).Magnitude - 5, 8)
+    end
+
+    return RootPart.Position + (AwayVector * TravelDistance)
+end
+
+StopAutoEscapeLoop = function()
+    if EscapeConnection then
+        EscapeConnection:Disconnect()
+        EscapeConnection = nil
+    end
+end
+
+local function StartAutoEscapeLoop()
+    if EscapeConnection then
+        return
+    end
+
+    EscapeConnection = RunService.Heartbeat:Connect(function()
+        if not CoreIsAlive or not AutoEscapeEnabled then
+            return
+        end
+        if os.clock() < NextEscapeTime then
+            return
+        end
+
+        local Character = LocalPlayer.Character
+        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+        local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+        if not RootPart or not Humanoid or Humanoid.Health <= 0 then
+            return
+        end
+
+        local MurdererRoot, Distance = FindNearestMurderer(RootPart)
+        if not MurdererRoot or Distance > ESCAPE_TRIGGER_RADIUS then
+            return
+        end
+
+        NextEscapeTime = os.clock() + ESCAPE_COOLDOWN
+
+        local EscapePosition = SolveEscapePosition(RootPart, MurdererRoot)
+        pcall(function()
+            Character:PivotTo(CFrame.new(EscapePosition + Vector3.new(0, 3, 0), MurdererRoot.Position))
+            RootPart.AssemblyLinearVelocity = Vector3.zero
+            RootPart.AssemblyAngularVelocity = Vector3.zero
+        end)
+
+        if ShowNotification then
+            ShowNotification("AUTO ESCAPE", "Killer was " .. math.floor(Distance) .. " studs out, moved you clear.", Color3.fromRGB(120, 210, 140))
         end
     end)
 end
 
-Setters.Spectate = CreateToggleRow(PageExtra, "SPECTATE MURDERER", 78, function(NewState)
-    SpectateMurdererEnabled = NewState
+Setters.AutoEscape = CreateToggleRow(PageExtra, "AUTO ESCAPE", 78, function(NewState)
+    AutoEscapeEnabled = NewState
     if NewState then
-        StartSpectateLoop()
+        StartAutoEscapeLoop()
     else
-        StopSpectateLoop()
+        StopAutoEscapeLoop()
     end
 end)
 end
-RunBuilder("Spectate")
+RunBuilder("AutoEscape")
 
 local ExtraBody = Instance.new("TextLabel")
 ExtraBody.Size = UDim2.new(1, -28, 0, 70)
 ExtraBody.Position = UDim2.new(0, 14, 0, 118)
 ExtraBody.BackgroundTransparency = 1
-ExtraBody.Text = "Auto Grab Gun picks the revolver off the floor and returns you to your spot. Spectate Murderer pins the camera to the killer so you can watch every move they make through walls."
+ExtraBody.Text = "Auto Grab Gun picks the revolver off the floor and returns you to your spot. Auto Escape watches the killer and throws you clear the moment he closes in, checking the floor ahead so you never land inside a wall."
 ExtraBody.TextColor3 = Palette.TextFaint
 ExtraBody.Font = Enum.Font.Code
 ExtraBody.TextSize = 10
@@ -2677,6 +2743,22 @@ local function FindPlayerWithRole(RoleKey)
     return nil
 end
 
+-- the old offsets used the target's local axes and then the teleport helper
+-- added four studs of height on top, which dropped you straight onto them.
+-- this builds the spot explicitly: flat look vector, real gap, own height.
+local function BuildBehindTargetCFrame(TargetRoot, GapDistance)
+    local Facing = TargetRoot.CFrame.LookVector
+    local FlatFacing = Vector3.new(Facing.X, 0, Facing.Z)
+    if FlatFacing.Magnitude < 0.05 then
+        FlatFacing = Vector3.new(0, 0, 1)
+    end
+    FlatFacing = FlatFacing.Unit
+
+    -- stand behind their back, at their height, looking at them
+    local StandPosition = TargetRoot.Position - (FlatFacing * GapDistance)
+    return CFrame.new(StandPosition, Vector3.new(TargetRoot.Position.X, StandPosition.Y, TargetRoot.Position.Z))
+end
+
 CreatePageButton(PageTeleport, "TELEPORT TO SHERIFF", 120, false, function()
     local _, SheriffRoot = FindPlayerWithRole("Sheriff")
     if not SheriffRoot then
@@ -2684,7 +2766,7 @@ CreatePageButton(PageTeleport, "TELEPORT TO SHERIFF", 120, false, function()
         return
     end
     if TeleportCharacterTo then
-        TeleportCharacterTo(SheriffRoot.CFrame * CFrame.new(0, 0, 1), "MOVED BEHIND THE SHERIFF")
+        TeleportCharacterTo(BuildBehindTargetCFrame(SheriffRoot, 5), "MOVED 5 STUDS BEHIND THE SHERIFF", true)
     end
 end)
 
@@ -2695,7 +2777,7 @@ CreatePageButton(PageTeleport, "TELEPORT TO MURDERER", 158, false, function()
         return
     end
     if TeleportCharacterTo then
-        TeleportCharacterTo(MurdererRoot.CFrame * CFrame.new(0, 0, 2.5), "MOVED BEHIND THE MURDERER · REVOLVER RANGE")
+        TeleportCharacterTo(BuildBehindTargetCFrame(MurdererRoot, 9), "MOVED 9 STUDS BEHIND THE MURDERER", true)
     end
 end)
 
@@ -2797,7 +2879,9 @@ local function FindLobbyPivot()
     return nil
 end
 
-TeleportCharacterTo = function(TargetCFrame, SuccessText)
+-- ExactHeight is used by the role teleports: they already solved the spot
+-- and the old blanket +4 studs is exactly what dropped you onto the target
+TeleportCharacterTo = function(TargetCFrame, SuccessText, ExactHeight)
     local Character = LocalPlayer.Character
     local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
     if not Character or not RootPart then
@@ -2805,9 +2889,11 @@ TeleportCharacterTo = function(TargetCFrame, SuccessText)
         return
     end
 
+    local LandingCFrame = ExactHeight and TargetCFrame or (TargetCFrame + Vector3.new(0, 4, 0))
+
     RootPart.AssemblyLinearVelocity = Vector3.zero
     RootPart.AssemblyAngularVelocity = Vector3.zero
-    Character:PivotTo(TargetCFrame + Vector3.new(0, 4, 0))
+    Character:PivotTo(LandingCFrame)
     RootPart.AssemblyLinearVelocity = Vector3.zero
     RootPart.AssemblyAngularVelocity = Vector3.zero
 
@@ -2930,11 +3016,11 @@ UpdateNotes.Size = UDim2.new(1, -28, 0, 130)
 UpdateNotes.Position = UDim2.new(0, 14, 0, 198)
 UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
-    "REMOVED  Coin collector and danger alert, both gone for good",
-    "ADDED    Spectate Murderer on the Extra tab",
-    "CHANGED  Radar needle: fixed math, smooth sweep, killer name",
-    "CHANGED  Role reader: boolean roles, retries after Fade",
-    "CHANGED  Knife throw equips first and aims at the torso",
+    "ADDED    My Role switch on the ESP tab, no more auto banner",
+    "ADDED    Auto Escape on the Extra tab",
+    "FIXED    Role teleports land behind the target, not on top",
+    "CHANGED  Radar needle math, window height, range box fit",
+    "CHANGED  Config loading survives a missing switch",
 }, string.char(10))
 UpdateNotes.TextColor3 = Palette.TextDim
 UpdateNotes.Font = Enum.Font.Code
@@ -3208,13 +3294,27 @@ CreatePageButton(PageSettings, "SAVE CONFIG", 118, true, function()
         local Encoded, EncodedText = pcall(function()
             return HttpServiceForJson:JSONEncode(Snapshot)
         end)
-        if Encoded then
-            local Written = pcall(FileWrite, GetConfigPath(ConfigName), EncodedText)
-            if not Written then
-                SetConfigStatus("SAVED FOR THIS SESSION ONLY", Color3.fromRGB(235, 180, 110))
-                SelectConfig(ConfigName)
-                return
-            end
+
+        -- the old path called a save "written" even when encoding failed
+        if not Encoded or type(EncodedText) ~= "string" then
+            SetConfigStatus("SAVED FOR THIS SESSION ONLY", Color3.fromRGB(235, 180, 110))
+            SelectConfig(ConfigName)
+            return
+        end
+
+        local Written = pcall(FileWrite, GetConfigPath(ConfigName), EncodedText)
+        if not Written then
+            SetConfigStatus("SAVED FOR THIS SESSION ONLY", Color3.fromRGB(235, 180, 110))
+            SelectConfig(ConfigName)
+            return
+        end
+
+        -- read it straight back: a silent write failure is worse than none
+        local Verified = pcall(FileRead, GetConfigPath(ConfigName))
+        if not Verified then
+            SetConfigStatus("SAVED FOR THIS SESSION ONLY", Color3.fromRGB(235, 180, 110))
+            SelectConfig(ConfigName)
+            return
         end
     end
 
@@ -3541,8 +3641,7 @@ local RoundSheriffUserId = nil
 local GunWasDropped = false
 local ScanEveryone
 
-local AnnounceSelfRole
-local LastAnnouncedSelfRole = nil
+local RefreshMyRoleHud
 
 local RoleWordMap = {
     murderer = "Murderer", murder = "Murderer", killer = "Murderer",
@@ -3620,12 +3719,9 @@ local function CommitPacketRole(TargetPlayer, RoleKey)
         RoundSheriffUserId = TargetPlayer.UserId
     end
 
-    -- your own role gets the reveal banner, once per round
-    if TargetPlayer == LocalPlayer and RoleKey ~= LastAnnouncedSelfRole then
-        LastAnnouncedSelfRole = RoleKey
-        if AnnounceSelfRole then
-            AnnounceSelfRole(RoleKey)
-        end
+    -- the readout only moves if the toggle asked for it
+    if TargetPlayer == LocalPlayer and RefreshMyRoleHud then
+        RefreshMyRoleHud()
     end
 end
 
@@ -3748,7 +3844,6 @@ local function BindKnownRoleRemote(RemoteInstance)
             ActiveRoleSource = "WAITING"
             RoundSheriffUserId = nil
             GunWasDropped = false
-            LastAnnouncedSelfRole = nil
             table.clear(RoleFromPacket)
             table.clear(JoinedMidRound)
             QueueRoleRefresh()
@@ -3979,9 +4074,12 @@ ScanEveryone = function()
         ActiveRoleSource = "WAITING"
         RoundSheriffUserId = nil
         GunWasDropped = false
-        LastAnnouncedSelfRole = nil
         table.clear(RoleFromPacket)
         table.clear(JoinedMidRound)
+    end
+
+    if RefreshMyRoleHud then
+        RefreshMyRoleHud()
     end
 
     ScanCounterLabel.Text = "SCAN · " .. TrackedCount .. " TRACKED"
@@ -4097,63 +4195,87 @@ CleanupRoleEsp = function()
     end
 end
 
--- ---- role reveal banner ----
-local SelfRoleBanner = Instance.new("CanvasGroup")
-SelfRoleBanner.Name = "SelfRoleBanner"
-SelfRoleBanner.AnchorPoint = Vector2.new(0.5, 0)
-SelfRoleBanner.Position = UDim2.new(0.5, 0, 0, -90)
-SelfRoleBanner.Size = UDim2.fromOffset(280, 74)
-SelfRoleBanner.BackgroundColor3 = Palette.Window
-SelfRoleBanner.BorderSizePixel = 0
-SelfRoleBanner.GroupTransparency = 1
-SelfRoleBanner.ZIndex = 45
-SelfRoleBanner.Parent = RootGui
-AddCorner(SelfRoleBanner, 12)
-local SelfRoleBannerStroke = AddStroke(SelfRoleBanner, Palette.Stroke, 0.3)
+-- ---- my role readout ----
+-- a small draggable card, on only while the ESP toggle says so. it keeps
+-- showing the current role instead of flashing once and disappearing.
+local MyRoleCard = Instance.new("Frame")
+MyRoleCard.Name = "MyRoleCard"
+MyRoleCard.AnchorPoint = Vector2.new(0, 0)
+MyRoleCard.Position = UDim2.new(0, 18, 0, 18)
+MyRoleCard.Size = UDim2.fromOffset(186, 56)
+MyRoleCard.BackgroundColor3 = Palette.Window
+MyRoleCard.BackgroundTransparency = 0.1
+MyRoleCard.BorderSizePixel = 0
+MyRoleCard.Active = true
+MyRoleCard.Visible = false
+MyRoleCard.ZIndex = 45
+MyRoleCard.Parent = RootGui
+AddCorner(MyRoleCard, 10)
+local MyRoleCardStroke = AddStroke(MyRoleCard, Palette.Stroke, 0.3)
+MakeDraggable(MyRoleCard)
 
-local SelfRoleCaption = Instance.new("TextLabel")
-SelfRoleCaption.Size = UDim2.new(1, -20, 0, 16)
-SelfRoleCaption.Position = UDim2.new(0, 10, 0, 10)
-SelfRoleCaption.BackgroundTransparency = 1
-SelfRoleCaption.Text = "YOUR ROLE THIS ROUND"
-SelfRoleCaption.TextColor3 = Palette.TextFaint
-SelfRoleCaption.Font = Enum.Font.Code
-SelfRoleCaption.TextSize = 10
-SelfRoleCaption.ZIndex = 46
-SelfRoleCaption.Parent = SelfRoleBanner
+local MyRoleCaption = Instance.new("TextLabel")
+MyRoleCaption.Size = UDim2.new(1, -20, 0, 14)
+MyRoleCaption.Position = UDim2.new(0, 12, 0, 9)
+MyRoleCaption.BackgroundTransparency = 1
+MyRoleCaption.Text = "MY ROLE"
+MyRoleCaption.TextColor3 = Palette.TextFaint
+MyRoleCaption.Font = Enum.Font.Code
+MyRoleCaption.TextSize = 10
+MyRoleCaption.TextXAlignment = Enum.TextXAlignment.Left
+MyRoleCaption.ZIndex = 46
+MyRoleCaption.Parent = MyRoleCard
 
-local SelfRoleValue = Instance.new("TextLabel")
-SelfRoleValue.Size = UDim2.new(1, -20, 0, 34)
-SelfRoleValue.Position = UDim2.new(0, 10, 0, 28)
-SelfRoleValue.BackgroundTransparency = 1
-SelfRoleValue.Text = "INNOCENT"
-SelfRoleValue.TextColor3 = Color3.fromRGB(88, 220, 124)
-SelfRoleValue.Font = Enum.Font.Code
-SelfRoleValue.TextSize = 24
-SelfRoleValue.TextXAlignment = Enum.TextXAlignment.Left
-SelfRoleValue.ZIndex = 46
-SelfRoleValue.Parent = SelfRoleBanner
+local MyRoleValue = Instance.new("TextLabel")
+MyRoleValue.Size = UDim2.new(1, -20, 0, 26)
+MyRoleValue.Position = UDim2.new(0, 12, 0, 24)
+MyRoleValue.BackgroundTransparency = 1
+MyRoleValue.Text = "WAITING"
+MyRoleValue.TextColor3 = Palette.TextDim
+MyRoleValue.Font = Enum.Font.Code
+MyRoleValue.TextSize = 20
+MyRoleValue.TextXAlignment = Enum.TextXAlignment.Left
+MyRoleValue.ZIndex = 46
+MyRoleValue.Parent = MyRoleCard
 
-local BannerToken = 0
+local LastShownRoleKey = nil
 
-AnnounceSelfRole = function(RoleKey)
-    local RoleTheme = RoleThemes[RoleKey] or RoleThemes.Unknown
-    SelfRoleValue.Text = RoleTheme.Label
-    SelfRoleValue.TextColor3 = RoleTheme.Color
-    Animate(SelfRoleBannerStroke, TweenFast, {Color = RoleTheme.Color})
+RefreshMyRoleHud = function()
+    if not CoreIsAlive or not MyRoleHudEnabled then
+        return
+    end
 
-    BannerToken = BannerToken + 1
-    local MyToken = BannerToken
+    -- ResolveRoleFor handles the packet, the hero override and the fallback,
+    -- so the card agrees with the tags hanging over everyone else
+    local MyRoleKey = ResolveRoleFor(LocalPlayer)
+    local RoleTheme = RoleThemes[MyRoleKey] or RoleThemes.Unknown
 
-    SelfRoleBanner.Position = UDim2.new(0.5, 0, 0, -90)
-    SelfRoleBanner.GroupTransparency = 1
-    Animate(SelfRoleBanner, TweenSlow, {GroupTransparency = 0, Position = UDim2.new(0.5, 0, 0, 26)})
+    if MyRoleKey == "Unknown" and not RoundIsLive then
+        MyRoleValue.Text = "WAITING"
+        MyRoleValue.TextColor3 = Palette.TextDim
+        MyRoleCardStroke.Color = Palette.Stroke
+        LastShownRoleKey = nil
+        return
+    end
 
-    task.delay(4, function()
-        if CoreIsAlive and MyToken == BannerToken then
-            Animate(SelfRoleBanner, TweenSlow, {GroupTransparency = 1, Position = UDim2.new(0.5, 0, 0, -90)})
-        end
-    end)
+    MyRoleValue.Text = RoleTheme.Label
+    MyRoleValue.TextColor3 = RoleTheme.Color
+    MyRoleCardStroke.Color = RoleTheme.Color
+
+    -- a small pop only when the role actually changes
+    if MyRoleKey ~= LastShownRoleKey then
+        LastShownRoleKey = MyRoleKey
+        MyRoleCard.Size = UDim2.fromOffset(170, 52)
+        Animate(MyRoleCard, TweenBounce, {Size = UDim2.fromOffset(186, 56)})
+    end
+end
+
+ApplyMyRoleHudState = function(NewState)
+    MyRoleCard.Visible = NewState
+    if NewState then
+        LastShownRoleKey = nil
+        RefreshMyRoleHud()
+    end
 end
 
 StartRoleEngine = function()
@@ -4668,6 +4790,7 @@ CollectConfigSnapshot = function()
         GunEsp = GunEspEnabled,
         XRay = XRayEnabled,
         MurdererRadar = MurdererRadarEnabled,
+        MyRoleHud = MyRoleHudEnabled,
         WalkSpeed = DesiredWalkSpeed,
         JumpPower = DesiredJumpPower,
         Noclip = NoclipEnabled,
@@ -4681,9 +4804,20 @@ CollectConfigSnapshot = function()
         AimWallCheck = AimWallCheckEnabled,
         KnifeThrowButton = KnifeThrowButtonEnabled,
         AutoGrabGun = AutoGrabGunEnabled,
-        SpectateMurderer = SpectateMurdererEnabled,
+        AutoEscape = AutoEscapeEnabled,
         FieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or DEFAULT_FIELD_OF_VIEW,
     }
+end
+
+-- a builder that failed at startup leaves its setter nil, and a saved config
+-- naming that switch used to throw halfway through the load and abandon the
+-- rest of the preset. every switch goes through this guard now.
+local function ApplyToggleFromConfig(SetterName, DesiredState)
+    local SetterFunction = Setters[SetterName]
+    if type(SetterFunction) ~= "function" then
+        return
+    end
+    pcall(SetterFunction, DesiredState and true or false)
 end
 
 ApplyConfigSnapshot = function(Snapshot)
@@ -4704,22 +4838,23 @@ ApplyConfigSnapshot = function(Snapshot)
         SetKillAuraRange(Snapshot.KillAuraRange)
     end
 
-    Setters.Highlight(Snapshot.RoleHighlight == true)
-    Setters.NameTags(Snapshot.NameTags == true)
-    Setters.GunEsp(Snapshot.GunEsp == true)
-    Setters.XRay(Snapshot.XRay == true)
-    Setters.MurdererRadar(Snapshot.MurdererRadar == true)
-    Setters.Noclip(Snapshot.Noclip == true)
-    Setters.InfiniteJump(Snapshot.InfiniteJump == true)
-    Setters.AntiFling(Snapshot.AntiFling == true)
-    Setters.SlowSpin(Snapshot.SlowSpin == true)
-    Setters.KillAura(Snapshot.KillAura == true)
-    Setters.LegitMode(Snapshot.LegitMode ~= false)
-    Setters.Aimbot(Snapshot.PredictionAimbot == true or Snapshot.Aimbot == true)
-    Setters.AimWallCheck(Snapshot.AimWallCheck ~= false)
-    Setters.KnifeThrow(Snapshot.KnifeThrowButton == true)
-    Setters.AutoGrabGun(Snapshot.AutoGrabGun == true)
-    Setters.Spectate(Snapshot.SpectateMurderer == true)
+    ApplyToggleFromConfig("Highlight", Snapshot.RoleHighlight == true)
+    ApplyToggleFromConfig("NameTags", Snapshot.NameTags == true)
+    ApplyToggleFromConfig("GunEsp", Snapshot.GunEsp == true)
+    ApplyToggleFromConfig("XRay", Snapshot.XRay == true)
+    ApplyToggleFromConfig("MurdererRadar", Snapshot.MurdererRadar == true)
+    ApplyToggleFromConfig("MyRole", Snapshot.MyRoleHud == true)
+    ApplyToggleFromConfig("Noclip", Snapshot.Noclip == true)
+    ApplyToggleFromConfig("InfiniteJump", Snapshot.InfiniteJump == true)
+    ApplyToggleFromConfig("AntiFling", Snapshot.AntiFling == true)
+    ApplyToggleFromConfig("SlowSpin", Snapshot.SlowSpin == true)
+    ApplyToggleFromConfig("KillAura", Snapshot.KillAura == true)
+    ApplyToggleFromConfig("LegitMode", Snapshot.LegitMode ~= false)
+    ApplyToggleFromConfig("Aimbot", Snapshot.PredictionAimbot == true or Snapshot.Aimbot == true)
+    ApplyToggleFromConfig("AimWallCheck", Snapshot.AimWallCheck ~= false)
+    ApplyToggleFromConfig("KnifeThrow", Snapshot.KnifeThrowButton == true)
+    ApplyToggleFromConfig("AutoGrabGun", Snapshot.AutoGrabGun == true)
+    ApplyToggleFromConfig("AutoEscape", Snapshot.AutoEscape == true)
 end
 
 -- ============ shutdown ============
@@ -4743,7 +4878,8 @@ local function ShutdownCore()
     AimbotEnabled = false
     AutoGrabGunEnabled = false
     MurdererRadarEnabled = false
-    SpectateMurdererEnabled = false
+    MyRoleHudEnabled = false
+    AutoEscapeEnabled = false
     KnifeThrowButtonEnabled = false
 
     StopNoclip()
@@ -4755,7 +4891,8 @@ local function ShutdownCore()
     StopAimbot()
     DisconnectMovementConnections()
     if StopMurdererRadar then StopMurdererRadar() end
-    if StopSpectateLoop then StopSpectateLoop() end
+    if StopAutoEscapeLoop then StopAutoEscapeLoop() end
+    if ApplyMyRoleHudState then ApplyMyRoleHudState(false) end
     if HideKnifeThrowFab then HideKnifeThrowFab() end
 
     if workspace.CurrentCamera then
@@ -4800,4 +4937,4 @@ task.spawn(function()
     end
 end)
 
--- by GachiRave · 1.0.2 · stable release`;
+-- by GachiRave · 1.0.2 · stable release
