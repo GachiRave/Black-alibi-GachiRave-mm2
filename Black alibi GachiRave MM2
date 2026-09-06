@@ -1357,18 +1357,80 @@ local MAX_SAFE_ANGULAR = 45
 local MAX_SAFE_LINEAR = 260
 local SafeCFrame = nil
 local NextSafePointTime = 0
+local PhasedParts = {}
+local PhaseConnection = nil
+local RestoreOwnCollisions
 
 ClearAntiFlingConnections = function()
     if AntiFlingConnection then
         AntiFlingConnection:Disconnect()
         AntiFlingConnection = nil
     end
+    if PhaseConnection then
+        PhaseConnection:Disconnect()
+        PhaseConnection = nil
+    end
+    RestoreOwnCollisions()
     SafeCFrame = nil
+end
+
+-- PLAYER PHASE.
+-- this is the real anti fling: a flinger has to physically collide with you
+-- to launch you, so your own limbs stop colliding with anyone. only YOUR
+-- parts are touched, never theirs, which is the whole difference from the
+-- build that froze the lobby: their bodies are network owned by them, and
+-- writing to those every frame is what stalled their simulation.
+--
+-- your feet still collide with the map, so you walk normally, you just pass
+-- through other players like they are not there.
+local function ApplyPhaseToCharacter(Character)
+    if not Character then
+        return
+    end
+    for _, Limb in ipairs(Character:GetChildren()) do
+        -- the root already ignores collisions, the limbs are the problem
+        if Limb:IsA("BasePart") and Limb.Name ~= "HumanoidRootPart" then
+            if PhasedParts[Limb] == nil then
+                PhasedParts[Limb] = Limb.CanCollide
+            end
+            -- CanCollide off on your own limbs keeps you standing on the
+            -- floor through the root and the humanoid's hip height
+            Limb.CanCollide = false
+        end
+    end
+end
+
+RestoreOwnCollisions = function()
+    for Limb, OriginalCanCollide in pairs(PhasedParts) do
+        if Limb and Limb.Parent then
+            pcall(function()
+                Limb.CanCollide = OriginalCanCollide
+            end)
+        end
+    end
+    table.clear(PhasedParts)
 end
 
 local function StartAntiFling()
     if AntiFlingConnection then
         return
+    end
+
+    ApplyPhaseToCharacter(LocalPlayer.Character)
+
+    -- a respawn brings fresh limbs that need the same treatment
+    if not PhaseConnection then
+        PhaseConnection = LocalPlayer.CharacterAdded:Connect(function(NewCharacter)
+            table.clear(PhasedParts)
+            if not AntiFlingEnabled then
+                return
+            end
+            NewCharacter:WaitForChild("HumanoidRootPart", 10)
+            task.wait(0.3)
+            if AntiFlingEnabled then
+                ApplyPhaseToCharacter(NewCharacter)
+            end
+        end)
     end
 
     AntiFlingConnection = RunService.Stepped:Connect(function()
@@ -1383,6 +1445,9 @@ local function StartAntiFling()
             SafeCFrame = nil
             return
         end
+
+        -- MM2 re-enables collisions on its own during some animations
+        ApplyPhaseToCharacter(Character)
 
         local LinearVelocity = RootPart.AssemblyLinearVelocity
         local AngularVelocity = RootPart.AssemblyAngularVelocity
@@ -1418,7 +1483,7 @@ LocalPlayer.CharacterAdded:Connect(function()
     SafeCFrame = nil
 end)
 
-Setters.AntiFling = CreateToggleRow(PagePlayer, "ANTI FLING", 216, function(NewState)
+Setters.AntiFling = CreateToggleRow(PagePlayer, "ANTI FLING · PHASE", 216, function(NewState)
     AntiFlingEnabled = NewState
     if NewState then
         StartAntiFling()
@@ -2050,16 +2115,35 @@ KillAllButton.Activated:Connect(RunKillAll)
 -- that was still sitting in the backpack, which never registers a kill.
 -- now the knife is equipped first, you pivot to face the target, and the
 -- touch lands on the torso (UpperTorso / Torso), not the head.
-local function GetEquippedKnife()
-    local Character = LocalPlayer.Character
-    if not Character then
+-- KNIFE LOOKUP, FIXED.
+-- the old code demanded a tool named exactly "Knife". MM2 renames the blade
+-- for every skin the murderer owns, so a player holding a Chroma or an
+-- event knife read as "not the murderer" and the throw refused to fire.
+-- any tool carrying a Handle counts now, with the plain name preferred.
+local function FindKnifeToolIn(Container)
+    if not Container then
         return nil
     end
-    local HeldKnife = Character:FindFirstChild("Knife")
-    if HeldKnife and HeldKnife:IsA("Tool") then
-        return HeldKnife
+
+    local ExactMatch = Container:FindFirstChild("Knife")
+    if ExactMatch and ExactMatch:IsA("Tool") then
+        return ExactMatch
+    end
+
+    for _, Item in ipairs(Container:GetChildren()) do
+        if Item:IsA("Tool") and Item:FindFirstChild("Handle") then
+            local LowerName = string.lower(Item.Name)
+            -- the revolver is the only other tool you can be holding
+            if LowerName ~= "gun" and LowerName ~= "revolver" then
+                return Item
+            end
+        end
     end
     return nil
+end
+
+local function GetEquippedKnife()
+    return FindKnifeToolIn(LocalPlayer.Character)
 end
 
 local function EnsureKnifeInHand()
@@ -2068,16 +2152,28 @@ local function EnsureKnifeInHand()
         return EquippedKnife
     end
 
-    local Backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
-    local PackedKnife = Backpack and Backpack:FindFirstChild("Knife")
+    local PackedKnife = FindKnifeToolIn(LocalPlayer:FindFirstChildOfClass("Backpack"))
     local Humanoid = GetLocalHumanoid()
-
-    if PackedKnife and Humanoid then
-        Humanoid:EquipTool(PackedKnife)
-        task.wait(0.18) -- the tool needs a beat to land in the hand
-        return GetEquippedKnife()
+    if not PackedKnife or not Humanoid then
+        return nil
     end
-    return nil
+
+    pcall(function()
+        Humanoid:EquipTool(PackedKnife)
+    end)
+
+    -- give the tool a few frames to actually land in the hand
+    for _ = 1, 12 do
+        local NowHeld = GetEquippedKnife()
+        if NowHeld then
+            return NowHeld
+        end
+        RunService.Heartbeat:Wait()
+    end
+
+    -- some executors block EquipTool: fall back to the backpack copy, the
+    -- touch still registers as long as the handle exists
+    return PackedKnife
 end
 
 local function GetBodyAimPart(TargetCharacter)
@@ -3101,11 +3197,11 @@ UpdateNotes.Size = UDim2.new(1, -28, 0, 130)
 UpdateNotes.Position = UDim2.new(0, 14, 0, 198)
 UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
-    "FIXED    Aim lead: the gun is hitscan, so ping is the lead",
-    "FIXED    Camera snaps the last degree instead of trailing",
-    "FIXED    Tracers hold on targets behind you, pinned to the edge",
-    "FIXED    Role reveal fires during the fade, before the round",
-    "FIXED    Nothing can be dragged off the edge of the screen",
+    "FIXED    Client crash on becoming murderer, sweeps throttled",
+    "FIXED    Knife throw reads skinned knives, not just Knife",
+    "FIXED    Role card no longer pops when you pick the gun up",
+    "ADDED    Anti Fling now phases you through other players",
+    "FIXED    Aim lead uses ping only, the MM2 gun is hitscan",
 }, string.char(10))
 UpdateNotes.TextColor3 = Palette.TextDim
 UpdateNotes.Font = Enum.Font.Code
@@ -4219,10 +4315,43 @@ local function PaintEspFor(TargetPlayer, RoleKey)
 end
 
 -- ---- scan ----
-ScanEveryone = function()
+-- CRASH FIX.
+-- every backpack and character ChildAdded/ChildRemoved was wired straight
+-- into a full sweep. the moment you turn murderer the knife is inserted,
+-- equipped and unequipped in quick succession, and each of those fired a
+-- complete pass over every player, each pass re-checking the dropped gun.
+-- on a full lobby that stacked into a freeze and took the client with it.
+-- the work is the same, it just cannot run more than once every 0.15s now,
+-- and a burst of events collapses into a single trailing sweep.
+local ScanIsQueued = false
+local LastScanTime = 0
+local RunScanNow
+
+local function RequestScan()
+    if not CoreIsAlive or ScanIsQueued then
+        return
+    end
+
+    local SinceLastScan = os.clock() - LastScanTime
+    if SinceLastScan >= 0.15 then
+        RunScanNow()
+        return
+    end
+
+    ScanIsQueued = true
+    task.delay(0.15 - SinceLastScan, function()
+        ScanIsQueued = false
+        if CoreIsAlive then
+            RunScanNow()
+        end
+    end)
+end
+
+RunScanNow = function()
     if not CoreIsAlive then
         return
     end
+    LastScanTime = os.clock()
 
     RefreshGunDropState()
 
@@ -4269,6 +4398,9 @@ ScanEveryone = function()
         RoundStateLabel.TextColor3 = Palette.TextFaint
     end
 end
+
+-- everything downstream asks through the throttle, never the raw sweep
+ScanEveryone = RequestScan
 
 -- react the instant a tool lands in a backpack or in a hand
 local function WatchPlayer(TargetPlayer)
@@ -4459,18 +4591,10 @@ RefreshMyRoleHud = function()
         return
     end
 
-    -- the packet carries the role first, before anything else knows.
-    -- read it directly: ResolveRoleFor would fall through to "Innocent" for
-    -- anyone breathing once the round is live, and that is a guess, not the
-    -- reveal. only a real assignment is worth putting on screen.
+    -- ONLY the packet. the equipment fallback used to be allowed in here and
+    -- that is why picking the dropped revolver up threw a SHERIFF card at
+    -- you mid round: a tool in your hands is not a role assignment.
     local MyRoleKey = RoleFromPacket[LocalPlayer.UserId]
-
-    if not MyRoleKey then
-        -- no packet yet: the equipment check still catches a knife or gun
-        -- landing in your hands during the fade
-        MyRoleKey = EquipmentGuess(LocalPlayer)
-    end
-
     if not MyRoleKey then
         return
     end
