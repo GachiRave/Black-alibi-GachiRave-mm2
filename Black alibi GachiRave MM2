@@ -1,4 +1,4 @@
--- Black Alibi MM2 | stable release
+Black Alibi MM2 | stable release
 -- version : 1.0.2
 -- author  : by GachiRave
 -- target  : Murder Mystery 2
@@ -648,11 +648,10 @@ end)
 local XRayEnabled = false
 local DisableXRay
 
-local MurdererRadarEnabled = false
-local StopMurdererRadar
+local TracersEnabled = false
+local StopTracers
 
--- your own role used to pop up on its own as a timed banner. it is a plain
--- toggle now: turn it on and a small card stays on screen with your role.
+-- the role reveal: armed by this switch, fires when the round hands out roles
 local MyRoleHudEnabled = false
 local ApplyMyRoleHudState
 
@@ -737,159 +736,129 @@ end)
 end
 RunBuilder("XRay")
 
--- ---- murderer radar ----
--- rebuilt. the old needle evered the angle (left and right were swapped),
--- snapped straight to the target and fired a tween every single frame.
--- now the angle comes from the camera's right vector, the needle sweeps
--- along the shortest path, and the label shows the killer pinned by name.
-Builders.Radar = function()
-local RadarHolder = Instance.new("Frame")
-RadarHolder.Name = "MurdererRadar"
-RadarHolder.AnchorPoint = Vector2.new(0.5, 0)
-RadarHolder.Position = UDim2.new(0.5, 0, 0, 14)
-RadarHolder.Size = UDim2.fromOffset(150, 62)
-RadarHolder.BackgroundColor3 = Palette.Window
-RadarHolder.BackgroundTransparency = 0.15
-RadarHolder.BorderSizePixel = 0
-RadarHolder.Visible = false
-RadarHolder.ZIndex = 30
-RadarHolder.Parent = RootGui
-AddCorner(RadarHolder, 10)
-local RadarStroke = AddStroke(RadarHolder, Color3.fromRGB(255, 72, 72), 0.35)
+-- ---- role tracers ----
+-- lines drawn from the bottom of the screen to every player, coloured by the
+-- same role table the highlights use. one thin frame per player, rotated and
+-- stretched each frame, so it costs nothing next to a full drawing library.
+Builders.Tracers = function()
+local TracerFolder = Instance.new("Frame")
+TracerFolder.Name = "TracerLayer"
+TracerFolder.Size = UDim2.fromScale(1, 1)
+TracerFolder.BackgroundTransparency = 1
+TracerFolder.BorderSizePixel = 0
+TracerFolder.Active = false
+TracerFolder.Visible = false
+TracerFolder.ZIndex = 20
+TracerFolder.Parent = RootGui
 
-local RadarArrow = Instance.new("TextLabel")
-RadarArrow.Size = UDim2.fromOffset(40, 26)
-RadarArrow.AnchorPoint = Vector2.new(0.5, 0)
-RadarArrow.Position = UDim2.new(0.5, 0, 0, 3)
-RadarArrow.BackgroundTransparency = 1
-RadarArrow.Text = "▲"
-RadarArrow.TextColor3 = Color3.fromRGB(255, 72, 72)
-RadarArrow.Font = Enum.Font.Code
-RadarArrow.TextSize = 20
-RadarArrow.ZIndex = 31
-RadarArrow.Parent = RadarHolder
+local TracerLines = {}
+local TracerConnection = nil
 
-local RadarNameLabel = Instance.new("TextLabel")
-RadarNameLabel.Size = UDim2.new(1, -10, 0, 13)
-RadarNameLabel.AnchorPoint = Vector2.new(0.5, 0)
-RadarNameLabel.Position = UDim2.new(0.5, 0, 0, 31)
-RadarNameLabel.BackgroundTransparency = 1
-RadarNameLabel.Text = "NO MURDERER YET"
-RadarNameLabel.TextColor3 = Palette.TextDim
-RadarNameLabel.Font = Enum.Font.Code
-RadarNameLabel.TextSize = 10
-RadarNameLabel.ZIndex = 31
-RadarNameLabel.Parent = RadarHolder
-
-local RadarDistanceLabel = Instance.new("TextLabel")
-RadarDistanceLabel.Size = UDim2.new(1, -10, 0, 13)
-RadarDistanceLabel.AnchorPoint = Vector2.new(0.5, 0)
-RadarDistanceLabel.Position = UDim2.new(0.5, 0, 0, 45)
-RadarDistanceLabel.BackgroundTransparency = 1
-RadarDistanceLabel.Text = "— STUDS"
-RadarDistanceLabel.TextColor3 = Palette.TextFaint
-RadarDistanceLabel.Font = Enum.Font.Code
-RadarDistanceLabel.TextSize = 10
-RadarDistanceLabel.ZIndex = 31
-RadarDistanceLabel.Parent = RadarHolder
-
-local RadarConnection = nil
-local CurrentNeedleAngle = 0
-
-local function FindMurdererForRadar()
-    if not GetRoleOfPlayer then
-        return nil, nil
+local function GetTracerLine(TargetPlayer)
+    local Line = TracerLines[TargetPlayer]
+    if Line and Line.Parent then
+        return Line
     end
-    for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
-        if OtherPlayer ~= LocalPlayer and GetRoleOfPlayer(OtherPlayer) == "Murderer" then
-            local OtherCharacter = OtherPlayer.Character
-            local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
-            if OtherRoot then
-                return OtherPlayer, OtherRoot
-            end
-        end
-    end
-    return nil, nil
+
+    Line = Instance.new("Frame")
+    Line.Name = "Tracer_" .. TargetPlayer.Name
+    Line.AnchorPoint = Vector2.new(0.5, 0.5)
+    Line.BorderSizePixel = 0
+    Line.BackgroundTransparency = 0.25
+    Line.Visible = false
+    Line.ZIndex = 20
+    Line.Parent = TracerFolder
+    TracerLines[TargetPlayer] = Line
+    return Line
 end
 
-StopMurdererRadar = function()
-    if RadarConnection then
-        RadarConnection:Disconnect()
-        RadarConnection = nil
+local function ReleaseTracer(TargetPlayer)
+    local Line = TracerLines[TargetPlayer]
+    if Line then
+        Line:Destroy()
+        TracerLines[TargetPlayer] = nil
     end
-    CurrentNeedleAngle = 0
-    RadarHolder.Visible = false
 end
 
-local function StartRadarLoop()
-    if RadarConnection then
+StopTracers = function()
+    if TracerConnection then
+        TracerConnection:Disconnect()
+        TracerConnection = nil
+    end
+    for TargetPlayer in pairs(TracerLines) do
+        ReleaseTracer(TargetPlayer)
+    end
+    TracerFolder.Visible = false
+end
+
+local function StartTracers()
+    if TracerConnection then
         return
     end
-    RadarHolder.Visible = true
+    TracerFolder.Visible = true
 
-    RadarConnection = RunService.RenderStepped:Connect(function(DeltaTime)
-        if not CoreIsAlive or not MurdererRadarEnabled then
+    TracerConnection = RunService.RenderStepped:Connect(function()
+        if not CoreIsAlive or not TracersEnabled then
             return
         end
 
-        local Character = LocalPlayer.Character
-        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
         local ActiveCamera = workspace.CurrentCamera
-        local MurdererPlayer, MurdererRoot = FindMurdererForRadar()
-
-        if not MurdererRoot or not RootPart or not ActiveCamera then
-            RadarNameLabel.Text = "NO MURDERER YET"
-            RadarDistanceLabel.Text = "— STUDS"
-            RadarDistanceLabel.TextColor3 = Palette.TextFaint
-            RadarStroke.Transparency = 0.55
+        if not ActiveCamera then
             return
         end
 
-        -- flatten everything onto the ground plane
-        local ToTarget = MurdererRoot.Position - RootPart.Position
-        local FlatToTarget = Vector3.new(ToTarget.X, 0, ToTarget.Z)
-        local FlatForward = Vector3.new(ActiveCamera.CFrame.LookVector.X, 0, ActiveCamera.CFrame.LookVector.Z)
-        local FlatRight = Vector3.new(ActiveCamera.CFrame.RightVector.X, 0, ActiveCamera.CFrame.RightVector.Z)
+        local ViewportSize = ActiveCamera.ViewportSize
+        local OriginX = ViewportSize.X / 2
+        local OriginY = ViewportSize.Y
 
-        -- right-vector dot is positive when the target sits right of the
-        -- camera, so atan2 maps straight onto a clockwise gui rotation
-        if FlatToTarget.Magnitude > 0.1 and FlatForward.Magnitude > 0.01 and FlatRight.Magnitude > 0.01 then
-            local TargetAngle = math.deg(math.atan2(FlatToTarget:Dot(FlatRight), FlatToTarget:Dot(FlatForward)))
+        for _, TargetPlayer in ipairs(PlayersService:GetPlayers()) do
+            if TargetPlayer ~= LocalPlayer then
+                local TargetCharacter = TargetPlayer.Character
+                local TargetRoot = TargetCharacter and TargetCharacter:FindFirstChild("HumanoidRootPart")
+                local TargetHumanoid = TargetCharacter and TargetCharacter:FindFirstChildOfClass("Humanoid")
 
-            -- unwrap onto the shortest path so the needle never spins the long way round
-            local AngleDifference = (TargetAngle - CurrentNeedleAngle) % 360
-            if AngleDifference > 180 then
-                AngleDifference = AngleDifference - 360
-            elseif AngleDifference < -180 then
-                AngleDifference = AngleDifference + 360
+                if TargetRoot and TargetHumanoid and TargetHumanoid.Health > 0 then
+                    local ScreenPoint, OnScreen = ActiveCamera:WorldToViewportPoint(TargetRoot.Position)
+                    local Line = GetTracerLine(TargetPlayer)
+
+                    if OnScreen then
+                        local DeltaX = ScreenPoint.X - OriginX
+                        local DeltaY = ScreenPoint.Y - OriginY
+                        local Length = math.sqrt((DeltaX * DeltaX) + (DeltaY * DeltaY))
+
+                        local RoleKey = GetRoleOfPlayer and GetRoleOfPlayer(TargetPlayer)
+                        local RoleTheme = RoleThemes[RoleKey] or RoleThemes.Unknown
+
+                        Line.Size = UDim2.fromOffset(math.max(Length, 1), 2)
+                        Line.Position = UDim2.fromOffset(OriginX + (DeltaX / 2), OriginY + (DeltaY / 2))
+                        Line.Rotation = math.deg(math.atan2(DeltaY, DeltaX))
+                        Line.BackgroundColor3 = RoleTheme.Color
+                        Line.Visible = true
+                    else
+                        Line.Visible = false
+                    end
+                else
+                    ReleaseTracer(TargetPlayer)
+                end
             end
-
-            local NeedleBlend = 1 - math.exp(-14 * math.clamp(DeltaTime, 0, 0.1))
-            CurrentNeedleAngle = CurrentNeedleAngle + AngleDifference * NeedleBlend
-            RadarArrow.Rotation = CurrentNeedleAngle
         end
-
-        local Distance = math.floor(ToTarget.Magnitude)
-        RadarNameLabel.Text = string.upper(MurdererPlayer.Name)
-        RadarDistanceLabel.Text = tostring(Distance) .. " STUDS"
-
-        -- since the danger overlay is gone, closeness shows up right here
-        local MurdererIsClose = Distance <= 25
-        RadarDistanceLabel.TextColor3 = MurdererIsClose and Color3.fromRGB(255, 96, 96) or Palette.TextFaint
-        RadarStroke.Transparency = MurdererIsClose and 0.1 or 0.35
     end)
 end
 
-Setters.MurdererRadar = CreateToggleRow(PageEsp, "MURDERER RADAR", 190, function(NewState)
-    MurdererRadarEnabled = NewState
+PlayersService.PlayerRemoving:Connect(function(LeavingPlayer)
+    ReleaseTracer(LeavingPlayer)
+end)
+
+Setters.Tracers = CreateToggleRow(PageEsp, "ROLE TRACERS", 190, function(NewState)
+    TracersEnabled = NewState
     if NewState then
-        StartRadarLoop()
+        StartTracers()
     else
-        StopMurdererRadar()
+        StopTracers()
     end
 end)
 end
-RunBuilder("Radar")
+RunBuilder("Tracers")
 
 -- own role readout, driven by the role engine further down
 Setters.MyRole = CreateToggleRow(PageEsp, "MY ROLE", 228, function(NewState)
@@ -1288,38 +1257,30 @@ Setters.InfiniteJump = CreateToggleRow(PagePlayer, "INFINITE JUMP", 184, functio
 end)
 
 -- ---- anti fling ----
--- a flinger pushes you through collision, so clamping your own velocity is
--- the wrong fix. the reliable answer: let every other character pass
--- straight through you. your client owns your physics, so once their limbs
--- ghost through there is nothing left to push with. the velocity clamp
--- stays as a backup for launches that still land.
+-- REWRITTEN. the old one walked every other character and forced CanCollide
+-- off and Massless on, every physics step. that is what froze the lobby:
+-- once their limbs are massless and non solid on your client, their
+-- simulation has nothing to stand on and they stop moving for you.
+--
+-- nobody else is touched now. a fling only ever reaches you through your own
+-- assembly, and your client owns that assembly, so watching your own root is
+-- both enough and completely invisible to everyone else.
 local AntiFlingEnabled = false
 local ClearAntiFlingConnections
 
 Builders.AntiFling = function()
 local AntiFlingConnection = nil
-local NoCollisionParts = setmetatable({}, {__mode = "k"})
-local MAX_SAFE_ANGULAR = 40
-local MAX_SAFE_LINEAR = 320
-
-local function RestoreOtherPlayerCollisions()
-    for Part, OriginalProperties in pairs(NoCollisionParts) do
-        if Part and Part.Parent then
-            pcall(function()
-                Part.CanCollide = OriginalProperties.CanCollide
-                Part.Massless = OriginalProperties.Massless
-            end)
-        end
-    end
-    table.clear(NoCollisionParts)
-end
+local MAX_SAFE_ANGULAR = 45
+local MAX_SAFE_LINEAR = 260
+local SafeCFrame = nil
+local NextSafePointTime = 0
 
 ClearAntiFlingConnections = function()
     if AntiFlingConnection then
         AntiFlingConnection:Disconnect()
         AntiFlingConnection = nil
     end
-    RestoreOtherPlayerCollisions()
+    SafeCFrame = nil
 end
 
 local function StartAntiFling()
@@ -1332,44 +1293,47 @@ local function StartAntiFling()
             return
         end
 
-        for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
-            if OtherPlayer ~= LocalPlayer then
-                local OtherCharacter = OtherPlayer.Character
-                if OtherCharacter then
-                    for _, Limb in ipairs(OtherCharacter:GetChildren()) do
-                        if Limb:IsA("BasePart") and Limb.CanCollide then
-                            if NoCollisionParts[Limb] == nil then
-                                NoCollisionParts[Limb] = {
-                                    CanCollide = Limb.CanCollide,
-                                    Massless = Limb.Massless,
-                                }
-                            end
-                            pcall(function()
-                                Limb.CanCollide = false
-                                Limb.Massless = true
-                            end)
-                        end
-                    end
-                end
-            end
-        end
-
         local Character = LocalPlayer.Character
         local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-        if not RootPart then
+        local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+        if not RootPart or not Humanoid or Humanoid.Health <= 0 then
+            SafeCFrame = nil
             return
         end
 
-        if RootPart.AssemblyAngularVelocity.Magnitude > MAX_SAFE_ANGULAR then
+        local LinearVelocity = RootPart.AssemblyLinearVelocity
+        local AngularVelocity = RootPart.AssemblyAngularVelocity
+        local BeingFlung = AngularVelocity.Magnitude > MAX_SAFE_ANGULAR
+            or LinearVelocity.Magnitude > MAX_SAFE_LINEAR
+
+        if BeingFlung then
+            -- kill the spin first, then the launch, then put the body back
+            -- on the last spot it was standing on calmly
             RootPart.AssemblyAngularVelocity = Vector3.zero
+            RootPart.AssemblyLinearVelocity = Vector3.new(0, math.min(LinearVelocity.Y, 0), 0)
+
+            if SafeCFrame then
+                pcall(function()
+                    Character:PivotTo(SafeCFrame)
+                    RootPart.AssemblyLinearVelocity = Vector3.zero
+                    RootPart.AssemblyAngularVelocity = Vector3.zero
+                end)
+            end
+            return
         end
 
-        local Velocity = RootPart.AssemblyLinearVelocity
-        if Velocity.Magnitude > MAX_SAFE_LINEAR then
-            RootPart.AssemblyLinearVelocity = Vector3.new(0, math.max(Velocity.Y, -160), 0)
+        -- remember where you were while nothing weird is happening
+        if os.clock() >= NextSafePointTime and Humanoid.FloorMaterial ~= Enum.Material.Air then
+            NextSafePointTime = os.clock() + 0.35
+            SafeCFrame = RootPart.CFrame
         end
     end)
 end
+
+-- a new body invalidates the old anchor point
+LocalPlayer.CharacterAdded:Connect(function()
+    SafeCFrame = nil
+end)
 
 Setters.AntiFling = CreateToggleRow(PagePlayer, "ANTI FLING", 216, function(NewState)
     AntiFlingEnabled = NewState
@@ -1444,6 +1408,8 @@ local AimbotEnabled = false
 local StopKillAura
 local StopAimbot
 local AimWallCheckEnabled = true
+local AutoEquipGunEnabled = false
+local StopAutoEquipGun
 local KnifeThrowButtonEnabled = false
 local HideKnifeThrowFab
 
@@ -1463,6 +1429,26 @@ CombatTitle.TextXAlignment = Enum.TextXAlignment.Left
 CombatTitle.ZIndex = 4
 CombatTitle.Parent = PageCombat
 
+-- both panels live in a scroller: the sheriff side grew a third switch and
+-- fixed panels were already brushing the bottom edge of the window
+local CombatScroll = Instance.new("ScrollingFrame")
+CombatScroll.Name = "CombatScroll"
+CombatScroll.Position = UDim2.new(0, 0, 0, 34)
+CombatScroll.Size = UDim2.new(1, 0, 1, -40)
+CombatScroll.BackgroundTransparency = 1
+CombatScroll.BorderSizePixel = 0
+CombatScroll.ScrollBarThickness = 2
+CombatScroll.ScrollBarImageColor3 = Palette.Accent
+CombatScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+CombatScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+CombatScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+CombatScroll.ZIndex = 4
+CombatScroll.Parent = PageCombat
+
+local CombatScrollPadding = Instance.new("UIPadding")
+CombatScrollPadding.PaddingBottom = UDim.new(0, 10)
+CombatScrollPadding.Parent = CombatScroll
+
 local function CreateRolePanel(TitleText, AccentColor, TopOffset, PanelHeight)
     local Panel = Instance.new("Frame")
     Panel.Size = UDim2.new(1, -28, 0, PanelHeight)
@@ -1470,7 +1456,7 @@ local function CreateRolePanel(TitleText, AccentColor, TopOffset, PanelHeight)
     Panel.BackgroundColor3 = Color3.fromRGB(23, 23, 27)
     Panel.BorderSizePixel = 0
     Panel.ZIndex = 4
-    Panel.Parent = PageCombat
+    Panel.Parent = CombatScroll
     AddCorner(Panel, 8)
     AddStroke(Panel, Palette.Stroke, 0.45)
 
@@ -1585,11 +1571,11 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
 end
 
 -- ---------- murderer panel ----------
-local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 32, 202)
+local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 0, 214)
 
 local RangeLabel = Instance.new("TextLabel")
 RangeLabel.Size = UDim2.new(1, -78, 0, 14)
-RangeLabel.Position = UDim2.new(0, 10, 0, 62)
+RangeLabel.Position = UDim2.new(0, 10, 0, 68)
 RangeLabel.BackgroundTransparency = 1
 RangeLabel.Text = "RANGE"
 RangeLabel.TextColor3 = Color3.fromRGB(196, 196, 206)
@@ -1603,7 +1589,7 @@ RangeLabel.Parent = MurdererPanel
 local RangeValueBox = Instance.new("TextBox")
 RangeValueBox.AnchorPoint = Vector2.new(1, 0)
 RangeValueBox.Size = UDim2.fromOffset(44, 19)
-RangeValueBox.Position = UDim2.new(1, -12, 0, 60)
+RangeValueBox.Position = UDim2.new(1, -12, 0, 66)
 RangeValueBox.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
 RangeValueBox.Text = tostring(KillAuraRange)
 RangeValueBox.TextColor3 = Palette.TextMain
@@ -1617,7 +1603,7 @@ AddStroke(RangeValueBox, Palette.Stroke, 0.45)
 
 local RangeTrack = Instance.new("Frame")
 RangeTrack.Size = UDim2.new(1, -20, 0, 6)
-RangeTrack.Position = UDim2.new(0, 10, 0, 82)
+RangeTrack.Position = UDim2.new(0, 10, 0, 90)
 RangeTrack.BackgroundColor3 = Color3.fromRGB(40, 40, 47)
 RangeTrack.BorderSizePixel = 0
 RangeTrack.ZIndex = 5
@@ -1840,7 +1826,7 @@ Setters.KillAura = CreatePanelToggle(MurdererPanel, "KILL AURA", 30, function(Ne
     end
 end)
 
-Setters.LegitMode = CreatePanelToggle(MurdererPanel, "LEGIT · NO WALL HITS", 94, function(NewState)
+Setters.LegitMode = CreatePanelToggle(MurdererPanel, "LEGIT · NO WALL HITS", 104, function(NewState)
     LegitModeEnabled = NewState
 end)
 
@@ -1959,7 +1945,7 @@ end
 
 local KillAllButton = Instance.new("TextButton")
 KillAllButton.Size = UDim2.new(1, -20, 0, 30)
-KillAllButton.Position = UDim2.new(0, 10, 0, 128)
+KillAllButton.Position = UDim2.new(0, 10, 0, 140)
 KillAllButton.BackgroundColor3 = Color3.fromRGB(48, 26, 28)
 KillAllButton.Text = "KILL ALL"
 KillAllButton.TextColor3 = Color3.fromRGB(255, 120, 120)
@@ -2190,7 +2176,7 @@ HideKnifeThrowFab = function()
     end
 end
 
-Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 162, function(NewState)
+Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 176, function(NewState)
     KnifeThrowButtonEnabled = NewState
     if NewState then
         local Fab = CreateKnifeThrowFab()
@@ -2201,7 +2187,7 @@ Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 162,
 end)
 
 -- ---------- sheriff panel ----------
-local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 242, 88)
+local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 226, 142)
 
 -- the aim only runs with the revolver actually in hand
 local function GunIsEquipped()
@@ -2241,15 +2227,26 @@ local function FindMurdererTarget()
     return nil
 end
 
--- prediction aim: horizontal lead is solved against predicted distance in
--- two passes, vertical lead is short and capped so a jumper can't drag the
--- crosshair into the ceiling. the velocity filter kills one-frame spikes.
+-- PREDICTION, REDONE.
+-- the previous build capped the lead at six studs and the lead time at
+-- 0.18s, which on a 30 stud shot works out to a few centimetres: that is
+-- why it behaved like a plain lock. this one solves the intercept properly.
+--
+--   1. iterate  t = |P_target(t) - P_camera| / bullet speed
+--      recomputing the target's future position each pass, the standard
+--      predictive-aim iteration, three passes is plenty for MM2 distances
+--   2. add the network term: what you see is the past from the server's
+--      point of view, so the target is also led by your own one-way ping
+--   3. drop in gravity for the vertical axis while the target is airborne
+--
+-- nothing is clamped down to nothing any more; the only guard is a sane
+-- ceiling so a teleport spike cannot fling the camera off the map.
 local AIM_RENDER_STEP_NAME = "BlackAlibiPredictionAimbot"
-local AIM_RESPONSE = 28
-local ASSUMED_SHOT_SPEED = 720
-local MAX_LEAD_TIME = 0.18
-local MAX_HORIZONTAL_LEAD = 6
-local MAX_VERTICAL_LEAD = 1
+local AIM_RESPONSE = 26
+local BULLET_TRAVEL_SPEED = 260   -- studs per second, tuned for the MM2 revolver
+local MAX_LEAD_TIME = 0.75
+local MAX_LEAD_DISTANCE = 42      -- guard against a replication spike, not a real cap
+local WORLD_GRAVITY = workspace.Gravity or 196.2
 local SmoothedVelocityByPlayer = setmetatable({}, {__mode = "k"})
 local CachedNetworkLatencySeconds = 0.04
 local LastNetworkLatencyUpdate = 0
@@ -2274,51 +2271,50 @@ local function GetNetworkLatencySeconds()
     return CachedNetworkLatencySeconds
 end
 
-local function ClampHorizontalVector(VectorValue, MaximumLength)
-    local HorizontalVector = Vector3.new(VectorValue.X, 0, VectorValue.Z)
-    local HorizontalLength = HorizontalVector.Magnitude
-    if HorizontalLength > MaximumLength and HorizontalLength > 0 then
-        return HorizontalVector.Unit * MaximumLength
-    end
-    return HorizontalVector
-end
-
 local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, TargetHumanoid, DeltaTime)
     local RawVelocity = TargetRoot.AssemblyLinearVelocity
     local PreviousVelocity = SmoothedVelocityByPlayer[TargetPlayer] or RawVelocity
 
-    -- frame rate independent filter: reads the same at 30, 60 and 120 fps
-    local VelocityBlend = 1 - math.exp(-10 * math.clamp(DeltaTime, 0, 0.1))
+    -- frame rate independent filter: reads the same at 30, 60 and 120 fps,
+    -- and one bad replication frame cannot yank the aim sideways
+    local VelocityBlend = 1 - math.exp(-16 * math.clamp(DeltaTime, 0, 0.1))
     local SmoothedVelocity = PreviousVelocity:Lerp(RawVelocity, VelocityBlend)
     SmoothedVelocityByPlayer[TargetPlayer] = SmoothedVelocity
 
     local ActiveCamera = workspace.CurrentCamera
     local CameraPosition = ActiveCamera and ActiveCamera.CFrame.Position or TargetPart.Position
-    local HorizontalVelocity = ClampHorizontalVector(SmoothedVelocity, 32)
+    local BasePosition = TargetPart.Position
 
-    local LeadTime = 0.05
-    for _ = 1, 2 do
-        local HorizontalLead = ClampHorizontalVector(HorizontalVelocity * LeadTime, MAX_HORIZONTAL_LEAD)
-        local PredictedFlatPosition = TargetPart.Position + HorizontalLead
-        local Distance = (PredictedFlatPosition - CameraPosition).Magnitude
+    -- one-way replication delay, half the measured round trip
+    local NetworkLead = GetNetworkLatencySeconds() * 0.5
+    local Airborne = TargetHumanoid.FloorMaterial == Enum.Material.Air
 
-        -- half the round trip ping is close enough to one-way replication delay
-        LeadTime = math.clamp(
-            (Distance / ASSUMED_SHOT_SPEED) + (GetNetworkLatencySeconds() * 0.5),
-            0.015,
-            MAX_LEAD_TIME
-        )
+    -- iterate the intercept: each pass re-measures the distance against the
+    -- position the target will actually be at, not the one it is at now
+    local TravelTime = (BasePosition - CameraPosition).Magnitude / BULLET_TRAVEL_SPEED
+    local PredictedPosition = BasePosition
+
+    for _ = 1, 3 do
+        local TotalLeadTime = math.clamp(TravelTime + NetworkLead, 0, MAX_LEAD_TIME)
+
+        PredictedPosition = BasePosition + (SmoothedVelocity * TotalLeadTime)
+
+        -- gravity only bends the path while they are off the ground
+        if Airborne then
+            PredictedPosition = PredictedPosition
+                - Vector3.new(0, 0.5 * WORLD_GRAVITY * TotalLeadTime * TotalLeadTime, 0)
+        end
+
+        TravelTime = (PredictedPosition - CameraPosition).Magnitude / BULLET_TRAVEL_SPEED
     end
 
-    local HorizontalLead = ClampHorizontalVector(HorizontalVelocity * LeadTime, MAX_HORIZONTAL_LEAD)
-
-    local VerticalLead = 0
-    if TargetHumanoid.FloorMaterial == Enum.Material.Air then
-        local VerticalTime = math.min(LeadTime, 0.09)
-        VerticalLead = math.clamp(SmoothedVelocity.Y * VerticalTime, -MAX_VERTICAL_LEAD, MAX_VERTICAL_LEAD)
+    -- sanity guard: a teleport or a lag spike must not throw the camera away
+    local LeadOffset = PredictedPosition - BasePosition
+    if LeadOffset.Magnitude > MAX_LEAD_DISTANCE then
+        LeadOffset = LeadOffset.Unit * MAX_LEAD_DISTANCE
     end
 
-    return TargetPart.Position + HorizontalLead + Vector3.new(0, VerticalLead, 0)
+    return BasePosition + LeadOffset
 end
 
 StopAimbot = function()
@@ -2362,7 +2358,7 @@ local function StartAimbot()
     end)
 end
 
-Setters.Aimbot = CreatePanelToggle(SheriffPanel, "PREDICTION AIMBOT · MOBILE LOCK", 24, function(NewState)
+Setters.Aimbot = CreatePanelToggle(SheriffPanel, "PREDICTION AIMBOT · MOBILE LOCK", 30, function(NewState)
     AimbotEnabled = NewState
     if NewState then
         StartAimbot()
@@ -2371,11 +2367,96 @@ Setters.Aimbot = CreatePanelToggle(SheriffPanel, "PREDICTION AIMBOT · MOBILE LO
     end
 end)
 
-Setters.AimWallCheck = CreatePanelToggle(SheriffPanel, "LEGIT · NO WALL AIM", 56, function(NewState)
+Setters.AimWallCheck = CreatePanelToggle(SheriffPanel, "LEGIT · NO WALL AIM", 68, function(NewState)
     AimWallCheckEnabled = NewState
 end)
 
 Setters.AimWallCheck(true)
+
+-- AUTO EQUIP GUN.
+-- draws the revolver by itself the moment the murderer is genuinely in
+-- sight. the same three sample line of sight test the aim uses gates it, so
+-- a killer behind a wall never gives you away by pulling the gun out.
+local AutoEquipConnection = nil
+local NextEquipCheck = 0
+
+StopAutoEquipGun = function()
+    if AutoEquipConnection then
+        AutoEquipConnection:Disconnect()
+        AutoEquipConnection = nil
+    end
+end
+
+local function GunToolInBackpack()
+    local Backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if not Backpack then
+        return nil
+    end
+    return Backpack:FindFirstChild("Gun") or Backpack:FindFirstChild("Revolver")
+end
+
+local function StartAutoEquipGun()
+    if AutoEquipConnection then
+        return
+    end
+
+    AutoEquipConnection = RunService.Heartbeat:Connect(function()
+        if not CoreIsAlive or not AutoEquipGunEnabled then
+            return
+        end
+        if os.clock() < NextEquipCheck then
+            return
+        end
+        NextEquipCheck = os.clock() + 0.2
+
+        if GunIsEquipped() then
+            return
+        end
+
+        local PackedGun = GunToolInBackpack()
+        if not PackedGun then
+            return -- not the sheriff, or the gun is already gone
+        end
+
+        local Character = LocalPlayer.Character
+        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+        local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+        if not RootPart or not Humanoid or Humanoid.Health <= 0 then
+            return
+        end
+
+        local _, TargetPart = FindMurdererTarget()
+        if not TargetPart then
+            return
+        end
+
+        -- eyes, not feet: raycast from the head so cover reads correctly
+        local EyePosition = RootPart.Position + Vector3.new(0, 1.5, 0)
+        if (TargetPart.Position - RootPart.Position).Magnitude > 120 then
+            return
+        end
+        if not TargetIsVisible(EyePosition, TargetPart) then
+            return
+        end
+
+        pcall(function()
+            Humanoid:EquipTool(PackedGun)
+        end)
+
+        if ShowNotification then
+            ShowNotification("AUTO EQUIP", "Murderer in sight, revolver drawn.", Color3.fromRGB(64, 132, 255))
+        end
+    end)
+end
+
+Setters.AutoEquipGun = CreatePanelToggle(SheriffPanel, "AUTO EQUIP ON SIGHT", 106, function(NewState)
+    AutoEquipGunEnabled = NewState
+    if NewState then
+        StartAutoEquipGun()
+    else
+        StopAutoEquipGun()
+    end
+end)
 
 end
 RunBuilder("Combat")
@@ -2643,83 +2724,9 @@ SetTeleportStatus = function(StatusText, StatusColor)
     Animate(TeleportStatusLabel, TweenFast, {TextTransparency = 0})
 end
 
--- server hop: public server list from the games api, skip the full ones and
--- the one you're in, jump to a random survivor, plain rejoin as a fallback
-local function AttemptServerHop()
-    SetTeleportStatus("SEARCHING FOR A SERVER ...", Color3.fromRGB(150, 190, 255))
-
-    task.spawn(function()
-        local ServersUrl = "https://games.roblox.com/v1/games/" .. game.PlaceId ..
-            "/servers/Public?sortOrder=Asc&limit=100"
-
-        local RawResponse = nil
-        local FetchSucceeded = pcall(function()
-            RawResponse = game:HttpGet(ServersUrl)
-        end)
-
-        -- some mobile executors only expose http through a request function
-        if not FetchSucceeded or not RawResponse then
-            local RequestFunction = http_request or request or (syn and syn.request)
-            if RequestFunction then
-                local AltSucceeded, AltResponse = pcall(function()
-                    return RequestFunction({Url = ServersUrl, Method = "GET"})
-                end)
-                if AltSucceeded and AltResponse and AltResponse.Body then
-                    RawResponse = AltResponse.Body
-                    FetchSucceeded = true
-                end
-            end
-        end
-
-        if not FetchSucceeded or not RawResponse then
-            SetTeleportStatus("SERVER LIST UNAVAILABLE · REJOINING", Color3.fromRGB(235, 180, 110))
-            pcall(function()
-                TeleportService:Teleport(game.PlaceId, LocalPlayer)
-            end)
-            return
-        end
-
-        local HttpJson = game:GetService("HttpService")
-        local DecodeSucceeded, ServerData = pcall(function()
-            return HttpJson:JSONDecode(RawResponse)
-        end)
-
-        local CandidateServers = {}
-        if DecodeSucceeded and ServerData and ServerData.data then
-            for _, ServerEntry in ipairs(ServerData.data) do
-                if ServerEntry.id ~= game.JobId
-                    and type(ServerEntry.playing) == "number"
-                    and type(ServerEntry.maxPlayers) == "number"
-                    and ServerEntry.playing < ServerEntry.maxPlayers then
-                    table.insert(CandidateServers, ServerEntry)
-                end
-            end
-        end
-
-        if #CandidateServers == 0 then
-            SetTeleportStatus("NO OPEN SERVER FOUND · REJOINING", Color3.fromRGB(235, 180, 110))
-            pcall(function()
-                TeleportService:Teleport(game.PlaceId, LocalPlayer)
-            end)
-            return
-        end
-
-        local ChosenServer = CandidateServers[math.random(1, #CandidateServers)]
-        SetTeleportStatus("HOPPING SERVER ...", Color3.fromRGB(120, 210, 140))
-
-        local TeleportSucceeded = pcall(function()
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, ChosenServer.id, LocalPlayer)
-        end)
-
-        if not TeleportSucceeded then
-            SetTeleportStatus("SERVER HOP FAILED", Color3.fromRGB(235, 110, 110))
-        end
-    end)
-end
-
-CreatePageButton(PageTeleport, "SERVER HOP", 44, true, AttemptServerHop)
-
-CreatePageButton(PageTeleport, "GRAB GUN", 82, false, function()
+-- Server Hop moved to Settings: it sits one tap away from the role
+-- teleports here and leaving the round by accident is not a small mistake
+CreatePageButton(PageTeleport, "GRAB GUN", 44, true, function()
     if RunGrabGun then
         RunGrabGun()
     end
@@ -2759,7 +2766,7 @@ local function BuildBehindTargetCFrame(TargetRoot, GapDistance)
     return CFrame.new(StandPosition, Vector3.new(TargetRoot.Position.X, StandPosition.Y, TargetRoot.Position.Z))
 end
 
-CreatePageButton(PageTeleport, "TELEPORT TO SHERIFF", 120, false, function()
+CreatePageButton(PageTeleport, "TELEPORT TO SHERIFF", 82, false, function()
     local _, SheriffRoot = FindPlayerWithRole("Sheriff")
     if not SheriffRoot then
         SetTeleportStatus("SHERIFF NOT FOUND", Color3.fromRGB(235, 110, 110))
@@ -2770,7 +2777,7 @@ CreatePageButton(PageTeleport, "TELEPORT TO SHERIFF", 120, false, function()
     end
 end)
 
-CreatePageButton(PageTeleport, "TELEPORT TO MURDERER", 158, false, function()
+CreatePageButton(PageTeleport, "TELEPORT TO MURDERER", 120, false, function()
     local _, MurdererRoot = FindPlayerWithRole("Murderer")
     if not MurdererRoot then
         SetTeleportStatus("MURDERER NOT FOUND", Color3.fromRGB(235, 110, 110))
@@ -2900,7 +2907,7 @@ TeleportCharacterTo = function(TargetCFrame, SuccessText, ExactHeight)
     SetTeleportStatus(SuccessText, Color3.fromRGB(120, 210, 140))
 end
 
-CreatePageButton(PageTeleport, "TELEPORT TO MAP", 196, false, function()
+CreatePageButton(PageTeleport, "TELEPORT TO MAP", 158, false, function()
     local MapPivot = FindRoundMapPivot()
     if not MapPivot then
         SetTeleportStatus("NO ACTIVE MAP RIGHT NOW", Color3.fromRGB(235, 110, 110))
@@ -2909,7 +2916,7 @@ CreatePageButton(PageTeleport, "TELEPORT TO MAP", 196, false, function()
     TeleportCharacterTo(MapPivot, "MOVED TO THE MAP")
 end)
 
-CreatePageButton(PageTeleport, "TELEPORT TO SPAWN", 234, false, function()
+CreatePageButton(PageTeleport, "TELEPORT TO SPAWN", 196, false, function()
     local LobbyPivot = FindLobbyPivot()
     if not LobbyPivot then
         SetTeleportStatus("SPAWN POINT NOT FOUND", Color3.fromRGB(235, 110, 110))
@@ -2920,9 +2927,9 @@ end)
 
 local TeleportHintLabel = Instance.new("TextLabel")
 TeleportHintLabel.Size = UDim2.new(1, -28, 0, 46)
-TeleportHintLabel.Position = UDim2.new(0, 14, 0, 278)
+TeleportHintLabel.Position = UDim2.new(0, 14, 0, 238)
 TeleportHintLabel.BackgroundTransparency = 1
-TeleportHintLabel.Text = "Grab Gun and the role teleports return or drop you right on target. Map and Spawn are one way jumps. Server Hop leaves the server entirely."
+TeleportHintLabel.Text = "Grab Gun brings you back after the pickup. The role jumps put you a safe gap behind the target. Server Hop now lives on the Settings tab."
 TeleportHintLabel.TextColor3 = Palette.TextFaint
 TeleportHintLabel.Font = Enum.Font.Code
 TeleportHintLabel.TextSize = 10
@@ -3016,11 +3023,11 @@ UpdateNotes.Size = UDim2.new(1, -28, 0, 130)
 UpdateNotes.Position = UDim2.new(0, 14, 0, 198)
 UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
-    "ADDED    My Role switch on the ESP tab, no more auto banner",
-    "ADDED    Auto Escape on the Extra tab",
-    "FIXED    Role teleports land behind the target, not on top",
-    "CHANGED  Radar needle math, window height, range box fit",
-    "CHANGED  Config loading survives a missing switch",
+    "FIXED    Real prediction: intercept solve plus ping lead",
+    "FIXED    Anti Fling no longer freezes other players",
+    "ADDED    Role Tracers, Auto Equip on sight, Auto Escape",
+    "ADDED    Role reveal slides in at round start, gone in 4s",
+    "MOVED    Server Hop to Settings, away from the teleports",
 }, string.char(10))
 UpdateNotes.TextColor3 = Palette.TextDim
 UpdateNotes.Font = Enum.Font.Code
@@ -3365,6 +3372,80 @@ end)
 
 RefreshConfigList()
 
+-- SERVER HOP, parked here on purpose.
+-- reads the public server list, drops the full ones and the one you are in,
+-- jumps to a random survivor. plain rejoin if the list cannot be read.
+CreatePageButton(PageSettings, "SERVER HOP", 232, false, function()
+    SetConfigStatus("SEARCHING FOR A SERVER ...", Color3.fromRGB(150, 190, 255))
+
+    task.spawn(function()
+        local ServersUrl = "https://games.roblox.com/v1/games/" .. game.PlaceId ..
+            "/servers/Public?sortOrder=Asc&limit=100"
+
+        local RawResponse = nil
+        local FetchSucceeded = pcall(function()
+            RawResponse = game:HttpGet(ServersUrl)
+        end)
+
+        -- some mobile executors only expose http through a request function
+        if not FetchSucceeded or not RawResponse then
+            local RequestFunction = http_request or request or (syn and syn.request)
+            if RequestFunction then
+                local AltSucceeded, AltResponse = pcall(function()
+                    return RequestFunction({Url = ServersUrl, Method = "GET"})
+                end)
+                if AltSucceeded and AltResponse and AltResponse.Body then
+                    RawResponse = AltResponse.Body
+                    FetchSucceeded = true
+                end
+            end
+        end
+
+        if not FetchSucceeded or not RawResponse then
+            SetConfigStatus("SERVER LIST UNAVAILABLE · REJOINING", Color3.fromRGB(235, 180, 110))
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+            return
+        end
+
+        local DecodeSucceeded, ServerData = pcall(function()
+            return HttpServiceForJson:JSONDecode(RawResponse)
+        end)
+
+        local CandidateServers = {}
+        if DecodeSucceeded and ServerData and ServerData.data then
+            for _, ServerEntry in ipairs(ServerData.data) do
+                if ServerEntry.id ~= game.JobId
+                    and type(ServerEntry.playing) == "number"
+                    and type(ServerEntry.maxPlayers) == "number"
+                    and ServerEntry.playing < ServerEntry.maxPlayers then
+                    table.insert(CandidateServers, ServerEntry)
+                end
+            end
+        end
+
+        if #CandidateServers == 0 then
+            SetConfigStatus("NO OPEN SERVER FOUND · REJOINING", Color3.fromRGB(235, 180, 110))
+            pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+            return
+        end
+
+        local ChosenServer = CandidateServers[math.random(1, #CandidateServers)]
+        SetConfigStatus("HOPPING SERVER ...", Color3.fromRGB(120, 210, 140))
+
+        local TeleportSucceeded = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, ChosenServer.id, LocalPlayer)
+        end)
+
+        if not TeleportSucceeded then
+            SetConfigStatus("SERVER HOP FAILED", Color3.fromRGB(235, 110, 110))
+        end
+    end)
+end)
+
 local PanicButton = Instance.new("TextButton")
 PanicButton.AnchorPoint = Vector2.new(0, 1)
 PanicButton.Size = UDim2.new(1, -28, 0, 34)
@@ -3642,6 +3723,7 @@ local GunWasDropped = false
 local ScanEveryone
 
 local RefreshMyRoleHud
+local LastAnnouncedRoleKey = nil
 
 local RoleWordMap = {
     murderer = "Murderer", murder = "Murderer", killer = "Murderer",
@@ -3844,6 +3926,7 @@ local function BindKnownRoleRemote(RemoteInstance)
             ActiveRoleSource = "WAITING"
             RoundSheriffUserId = nil
             GunWasDropped = false
+            LastAnnouncedRoleKey = nil -- next round gets its own reveal
             table.clear(RoleFromPacket)
             table.clear(JoinedMidRound)
             QueueRoleRefresh()
@@ -4074,6 +4157,7 @@ ScanEveryone = function()
         ActiveRoleSource = "WAITING"
         RoundSheriffUserId = nil
         GunWasDropped = false
+        LastAnnouncedRoleKey = nil
         table.clear(RoleFromPacket)
         table.clear(JoinedMidRound)
     end
@@ -4195,87 +4279,119 @@ CleanupRoleEsp = function()
     end
 end
 
--- ---- my role readout ----
--- a small draggable card, on only while the ESP toggle says so. it keeps
--- showing the current role instead of flashing once and disappearing.
-local MyRoleCard = Instance.new("Frame")
-MyRoleCard.Name = "MyRoleCard"
-MyRoleCard.AnchorPoint = Vector2.new(0, 0)
-MyRoleCard.Position = UDim2.new(0, 18, 0, 18)
-MyRoleCard.Size = UDim2.fromOffset(186, 56)
-MyRoleCard.BackgroundColor3 = Palette.Window
-MyRoleCard.BackgroundTransparency = 0.1
-MyRoleCard.BorderSizePixel = 0
-MyRoleCard.Active = true
-MyRoleCard.Visible = false
-MyRoleCard.ZIndex = 45
-MyRoleCard.Parent = RootGui
-AddCorner(MyRoleCard, 10)
-local MyRoleCardStroke = AddStroke(MyRoleCard, Palette.Stroke, 0.3)
-MakeDraggable(MyRoleCard)
+-- ---- role reveal ----
+-- armed by the MY ROLE switch. the moment the round hands you a role the
+-- card glides down from above the screen, sits there for four seconds and
+-- slides back out. one reveal per round, nothing stays on screen after.
+local SelfRoleBanner = Instance.new("CanvasGroup")
+SelfRoleBanner.Name = "SelfRoleBanner"
+SelfRoleBanner.AnchorPoint = Vector2.new(0.5, 0)
+SelfRoleBanner.Position = UDim2.new(0.5, 0, 0, -100)
+SelfRoleBanner.Size = UDim2.fromOffset(268, 72)
+SelfRoleBanner.BackgroundColor3 = Palette.Window
+SelfRoleBanner.BorderSizePixel = 0
+SelfRoleBanner.GroupTransparency = 1
+SelfRoleBanner.Visible = false
+SelfRoleBanner.ZIndex = 45
+SelfRoleBanner.Parent = RootGui
+AddCorner(SelfRoleBanner, 12)
+local SelfRoleBannerStroke = AddStroke(SelfRoleBanner, Palette.Stroke, 0.3)
 
-local MyRoleCaption = Instance.new("TextLabel")
-MyRoleCaption.Size = UDim2.new(1, -20, 0, 14)
-MyRoleCaption.Position = UDim2.new(0, 12, 0, 9)
-MyRoleCaption.BackgroundTransparency = 1
-MyRoleCaption.Text = "MY ROLE"
-MyRoleCaption.TextColor3 = Palette.TextFaint
-MyRoleCaption.Font = Enum.Font.Code
-MyRoleCaption.TextSize = 10
-MyRoleCaption.TextXAlignment = Enum.TextXAlignment.Left
-MyRoleCaption.ZIndex = 46
-MyRoleCaption.Parent = MyRoleCard
+local SelfRoleAccent = Instance.new("Frame")
+SelfRoleAccent.Size = UDim2.fromOffset(3, 44)
+SelfRoleAccent.Position = UDim2.new(0, 14, 0, 14)
+SelfRoleAccent.BackgroundColor3 = Palette.TextDim
+SelfRoleAccent.BorderSizePixel = 0
+SelfRoleAccent.ZIndex = 46
+SelfRoleAccent.Parent = SelfRoleBanner
+AddCorner(SelfRoleAccent, 2)
 
-local MyRoleValue = Instance.new("TextLabel")
-MyRoleValue.Size = UDim2.new(1, -20, 0, 26)
-MyRoleValue.Position = UDim2.new(0, 12, 0, 24)
-MyRoleValue.BackgroundTransparency = 1
-MyRoleValue.Text = "WAITING"
-MyRoleValue.TextColor3 = Palette.TextDim
-MyRoleValue.Font = Enum.Font.Code
-MyRoleValue.TextSize = 20
-MyRoleValue.TextXAlignment = Enum.TextXAlignment.Left
-MyRoleValue.ZIndex = 46
-MyRoleValue.Parent = MyRoleCard
+local SelfRoleCaption = Instance.new("TextLabel")
+SelfRoleCaption.Size = UDim2.new(1, -34, 0, 14)
+SelfRoleCaption.Position = UDim2.new(0, 26, 0, 14)
+SelfRoleCaption.BackgroundTransparency = 1
+SelfRoleCaption.Text = "YOUR ROLE THIS ROUND"
+SelfRoleCaption.TextColor3 = Palette.TextFaint
+SelfRoleCaption.Font = Enum.Font.Code
+SelfRoleCaption.TextSize = 10
+SelfRoleCaption.TextXAlignment = Enum.TextXAlignment.Left
+SelfRoleCaption.ZIndex = 46
+SelfRoleCaption.Parent = SelfRoleBanner
 
-local LastShownRoleKey = nil
+local SelfRoleValue = Instance.new("TextLabel")
+SelfRoleValue.Size = UDim2.new(1, -34, 0, 30)
+SelfRoleValue.Position = UDim2.new(0, 26, 0, 30)
+SelfRoleValue.BackgroundTransparency = 1
+SelfRoleValue.Text = "INNOCENT"
+SelfRoleValue.TextColor3 = Color3.fromRGB(88, 220, 124)
+SelfRoleValue.Font = Enum.Font.Code
+SelfRoleValue.TextSize = 24
+SelfRoleValue.TextXAlignment = Enum.TextXAlignment.Left
+SelfRoleValue.ZIndex = 46
+SelfRoleValue.Parent = SelfRoleBanner
+
+local BannerSlide = TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local BannerToken = 0
+
+local function PlayRoleReveal(RoleKey)
+    local RoleTheme = RoleThemes[RoleKey] or RoleThemes.Unknown
+    SelfRoleValue.Text = RoleTheme.Label
+    SelfRoleValue.TextColor3 = RoleTheme.Color
+    SelfRoleAccent.BackgroundColor3 = RoleTheme.Color
+    SelfRoleBannerStroke.Color = RoleTheme.Color
+
+    BannerToken = BannerToken + 1
+    local MyToken = BannerToken
+
+    -- start above the screen edge, glide down into view
+    SelfRoleBanner.Position = UDim2.new(0.5, 0, 0, -100)
+    SelfRoleBanner.GroupTransparency = 1
+    SelfRoleBanner.Visible = true
+    Animate(SelfRoleBanner, BannerSlide, {GroupTransparency = 0, Position = UDim2.new(0.5, 0, 0, 24)})
+
+    task.delay(4, function()
+        if not CoreIsAlive or MyToken ~= BannerToken then
+            return
+        end
+        Animate(SelfRoleBanner, BannerSlide, {GroupTransparency = 1, Position = UDim2.new(0.5, 0, 0, -100)})
+        task.delay(0.6, function()
+            if CoreIsAlive and MyToken == BannerToken then
+                SelfRoleBanner.Visible = false
+            end
+        end)
+    end)
+end
 
 RefreshMyRoleHud = function()
     if not CoreIsAlive or not MyRoleHudEnabled then
         return
     end
 
-    -- ResolveRoleFor handles the packet, the hero override and the fallback,
-    -- so the card agrees with the tags hanging over everyone else
+    -- ResolveRoleFor covers the packet, the hero override and the fallback,
+    -- so the reveal agrees with the tags hanging over everyone else
     local MyRoleKey = ResolveRoleFor(LocalPlayer)
-    local RoleTheme = RoleThemes[MyRoleKey] or RoleThemes.Unknown
-
-    if MyRoleKey == "Unknown" and not RoundIsLive then
-        MyRoleValue.Text = "WAITING"
-        MyRoleValue.TextColor3 = Palette.TextDim
-        MyRoleCardStroke.Color = Palette.Stroke
-        LastShownRoleKey = nil
+    if MyRoleKey == "Unknown" then
         return
     end
 
-    MyRoleValue.Text = RoleTheme.Label
-    MyRoleValue.TextColor3 = RoleTheme.Color
-    MyRoleCardStroke.Color = RoleTheme.Color
-
-    -- a small pop only when the role actually changes
-    if MyRoleKey ~= LastShownRoleKey then
-        LastShownRoleKey = MyRoleKey
-        MyRoleCard.Size = UDim2.fromOffset(170, 52)
-        Animate(MyRoleCard, TweenBounce, {Size = UDim2.fromOffset(186, 56)})
+    if MyRoleKey ~= LastAnnouncedRoleKey then
+        LastAnnouncedRoleKey = MyRoleKey
+        PlayRoleReveal(MyRoleKey)
     end
 end
 
 ApplyMyRoleHudState = function(NewState)
-    MyRoleCard.Visible = NewState
     if NewState then
-        LastShownRoleKey = nil
+        -- switched on mid round: show what you are right now
+        LastAnnouncedRoleKey = nil
         RefreshMyRoleHud()
+        return
     end
+
+    BannerToken = BannerToken + 1
+    SelfRoleBanner.Visible = false
+    SelfRoleBanner.GroupTransparency = 1
+    SelfRoleBanner.Position = UDim2.new(0.5, 0, 0, -100)
 end
 
 StartRoleEngine = function()
@@ -4789,7 +4905,7 @@ CollectConfigSnapshot = function()
         NameTags = NameTagsEnabled,
         GunEsp = GunEspEnabled,
         XRay = XRayEnabled,
-        MurdererRadar = MurdererRadarEnabled,
+        Tracers = TracersEnabled,
         MyRoleHud = MyRoleHudEnabled,
         WalkSpeed = DesiredWalkSpeed,
         JumpPower = DesiredJumpPower,
@@ -4802,6 +4918,7 @@ CollectConfigSnapshot = function()
         LegitMode = LegitModeEnabled,
         PredictionAimbot = AimbotEnabled,
         AimWallCheck = AimWallCheckEnabled,
+        AutoEquipGun = AutoEquipGunEnabled,
         KnifeThrowButton = KnifeThrowButtonEnabled,
         AutoGrabGun = AutoGrabGunEnabled,
         AutoEscape = AutoEscapeEnabled,
@@ -4842,7 +4959,7 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("NameTags", Snapshot.NameTags == true)
     ApplyToggleFromConfig("GunEsp", Snapshot.GunEsp == true)
     ApplyToggleFromConfig("XRay", Snapshot.XRay == true)
-    ApplyToggleFromConfig("MurdererRadar", Snapshot.MurdererRadar == true)
+    ApplyToggleFromConfig("Tracers", Snapshot.Tracers == true)
     ApplyToggleFromConfig("MyRole", Snapshot.MyRoleHud == true)
     ApplyToggleFromConfig("Noclip", Snapshot.Noclip == true)
     ApplyToggleFromConfig("InfiniteJump", Snapshot.InfiniteJump == true)
@@ -4852,6 +4969,7 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("LegitMode", Snapshot.LegitMode ~= false)
     ApplyToggleFromConfig("Aimbot", Snapshot.PredictionAimbot == true or Snapshot.Aimbot == true)
     ApplyToggleFromConfig("AimWallCheck", Snapshot.AimWallCheck ~= false)
+    ApplyToggleFromConfig("AutoEquipGun", Snapshot.AutoEquipGun == true)
     ApplyToggleFromConfig("KnifeThrow", Snapshot.KnifeThrowButton == true)
     ApplyToggleFromConfig("AutoGrabGun", Snapshot.AutoGrabGun == true)
     ApplyToggleFromConfig("AutoEscape", Snapshot.AutoEscape == true)
@@ -4877,9 +4995,10 @@ local function ShutdownCore()
     KillAuraEnabled = false
     AimbotEnabled = false
     AutoGrabGunEnabled = false
-    MurdererRadarEnabled = false
+    TracersEnabled = false
     MyRoleHudEnabled = false
     AutoEscapeEnabled = false
+    AutoEquipGunEnabled = false
     KnifeThrowButtonEnabled = false
 
     StopNoclip()
@@ -4890,7 +5009,8 @@ local function ShutdownCore()
     StopKillAura()
     StopAimbot()
     DisconnectMovementConnections()
-    if StopMurdererRadar then StopMurdererRadar() end
+    if StopTracers then StopTracers() end
+    if StopAutoEquipGun then StopAutoEquipGun() end
     if StopAutoEscapeLoop then StopAutoEscapeLoop() end
     if ApplyMyRoleHudState then ApplyMyRoleHudState(false) end
     if HideKnifeThrowFab then HideKnifeThrowFab() end
