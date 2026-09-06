@@ -104,16 +104,42 @@ local function AddStroke(TargetInstance, StrokeColor, StrokeTransparency)
     return Stroke
 end
 
--- one drag handler for mouse and touch, shared by every floating surface
+-- one drag handler for mouse and touch, shared by every floating surface.
+-- the position is clamped so nothing can be shoved past the screen edge and
+-- left there: a menu dragged into the top bezel used to be unreachable.
 local function MakeDraggable(TargetFrame)
     local Dragging = false
     local PointerOrigin, FrameOrigin
+
+    -- how much of the surface must stay on screen, in pixels
+    local KEEP_VISIBLE = 42
+
+    local function ClampToScreen(ProposedX, ProposedY)
+        local ActiveCamera = workspace.CurrentCamera
+        local ViewportSize = ActiveCamera and ActiveCamera.ViewportSize or Vector2.new(1280, 720)
+        local FrameSize = TargetFrame.AbsoluteSize
+        local Anchor = TargetFrame.AnchorPoint
+
+        -- convert to the top left corner, clamp there, convert back
+        local CornerX = ProposedX - (FrameSize.X * Anchor.X)
+        local CornerY = ProposedY - (FrameSize.Y * Anchor.Y)
+
+        local MinX = -(FrameSize.X - KEEP_VISIBLE)
+        local MaxX = ViewportSize.X - KEEP_VISIBLE
+        local MinY = 0 -- never above the top edge, that is the trap
+        local MaxY = ViewportSize.Y - KEEP_VISIBLE
+
+        CornerX = math.clamp(CornerX, MinX, MaxX)
+        CornerY = math.clamp(CornerY, MinY, MaxY)
+
+        return CornerX + (FrameSize.X * Anchor.X), CornerY + (FrameSize.Y * Anchor.Y)
+    end
 
     TargetFrame.InputBegan:Connect(function(Input)
         if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
             Dragging = true
             PointerOrigin = Input.Position
-            FrameOrigin = TargetFrame.Position
+            FrameOrigin = TargetFrame.AbsolutePosition + (TargetFrame.AbsoluteSize * TargetFrame.AnchorPoint)
             Input.Changed:Connect(function()
                 if Input.UserInputState == Enum.UserInputState.End then
                     Dragging = false
@@ -129,12 +155,26 @@ local function MakeDraggable(TargetFrame)
         if Input.UserInputType ~= Enum.UserInputType.MouseMovement and Input.UserInputType ~= Enum.UserInputType.Touch then
             return
         end
+
         local Delta = Input.Position - PointerOrigin
-        TargetFrame.Position = UDim2.new(
-            FrameOrigin.X.Scale, FrameOrigin.X.Offset + Delta.X,
-            FrameOrigin.Y.Scale, FrameOrigin.Y.Offset + Delta.Y
-        )
+        local ClampedX, ClampedY = ClampToScreen(FrameOrigin.X + Delta.X, FrameOrigin.Y + Delta.Y)
+
+        -- offsets only: scale would drift the moment the viewport changes
+        TargetFrame.Position = UDim2.fromOffset(ClampedX, ClampedY)
     end)
+
+    -- rotating the phone shrinks the viewport, so re-clamp on resize
+    local ActiveCamera = workspace.CurrentCamera
+    if ActiveCamera then
+        ActiveCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+            if not TargetFrame.Parent then
+                return
+            end
+            local CurrentCenter = TargetFrame.AbsolutePosition + (TargetFrame.AbsoluteSize * TargetFrame.AnchorPoint)
+            local ClampedX, ClampedY = ClampToScreen(CurrentCenter.X, CurrentCenter.Y)
+            TargetFrame.Position = UDim2.fromOffset(ClampedX, ClampedY)
+        end)
+    end
 end
 
 -- ============ root ============
@@ -846,25 +886,40 @@ local function StartTracers()
                 local TargetHumanoid = TargetCharacter and TargetCharacter:FindFirstChildOfClass("Humanoid")
 
                 if TargetRoot and TargetHumanoid and TargetHumanoid.Health > 0 then
-                    local ScreenPoint, OnScreen = ActiveCamera:WorldToViewportPoint(TargetRoot.Position)
+                    local ScreenPoint = ActiveCamera:WorldToViewportPoint(TargetRoot.Position)
                     local Line = GetTracerLine(TargetPlayer)
 
-                    if OnScreen then
-                        local DeltaX = ScreenPoint.X - OriginX
-                        local DeltaY = ScreenPoint.Y - OriginY
-                        local Length = math.sqrt((DeltaX * DeltaX) + (DeltaY * DeltaY))
+                    local PointX = ScreenPoint.X
+                    local PointY = ScreenPoint.Y
 
-                        local RoleKey = GetRoleOfPlayer and GetRoleOfPlayer(TargetPlayer)
-                        local RoleTheme = RoleThemes[RoleKey] or RoleThemes.Unknown
-
-                        Line.Size = UDim2.fromOffset(math.max(Length, 1), 2)
-                        Line.Position = UDim2.fromOffset(OriginX + (DeltaX / 2), OriginY + (DeltaY / 2))
-                        Line.Rotation = math.deg(math.atan2(DeltaY, DeltaX))
-                        Line.BackgroundColor3 = RoleTheme.Color
-                        Line.Visible = true
-                    else
-                        Line.Visible = false
+                    -- behind the camera WorldToViewportPoint returns a mirrored
+                    -- point with a negative Z. flipping it through the centre
+                    -- puts the line on the correct side, so turning your back
+                    -- on someone swings the tracer around instead of killing it
+                    if ScreenPoint.Z < 0 then
+                        PointX = ViewportSize.X - PointX
+                        PointY = ViewportSize.Y - PointY
                     end
+
+                    -- pin off screen targets to the border: the line still
+                    -- points at them, it just stops at the edge of the display
+                    PointX = math.clamp(PointX, 4, ViewportSize.X - 4)
+                    PointY = math.clamp(PointY, 4, ViewportSize.Y - 4)
+
+                    local DeltaX = PointX - OriginX
+                    local DeltaY = PointY - OriginY
+                    local Length = math.sqrt((DeltaX * DeltaX) + (DeltaY * DeltaY))
+
+                    local RoleKey = GetRoleOfPlayer and GetRoleOfPlayer(TargetPlayer)
+                    local RoleTheme = RoleThemes[RoleKey] or RoleThemes.Unknown
+
+                    Line.Size = UDim2.fromOffset(math.max(Length, 1), 2)
+                    Line.Position = UDim2.fromOffset(OriginX + (DeltaX / 2), OriginY + (DeltaY / 2))
+                    Line.Rotation = math.deg(math.atan2(DeltaY, DeltaX))
+                    Line.BackgroundColor3 = RoleTheme.Color
+                    -- dimmed while they are behind you, solid while in view
+                    Line.BackgroundTransparency = (ScreenPoint.Z < 0) and 0.62 or 0.2
+                    Line.Visible = true
                 else
                     ReleaseTracer(TargetPlayer)
                 end
@@ -2236,28 +2291,34 @@ local function FindMurdererTarget()
     return nil
 end
 
--- PREDICTION, REDONE.
--- the previous build capped the lead at six studs and the lead time at
--- 0.18s, which on a 30 stud shot works out to a few centimetres: that is
--- why it behaved like a plain lock. this one solves the intercept properly.
+-- PREDICTION, FIXED FOR HOW MM2 ACTUALLY SHOOTS.
 --
---   1. iterate  t = |P_target(t) - P_camera| / bullet speed
---      recomputing the target's future position each pass, the standard
---      predictive-aim iteration, three passes is plenty for MM2 distances
---   2. add the network term: what you see is the past from the server's
---      point of view, so the target is also led by your own one-way ping
---   3. drop in gravity for the vertical axis while the target is airborne
+-- the last two builds treated the revolver as a travelling projectile and
+-- solved an intercept against a bullet speed. that was the whole problem:
+-- the MM2 gun is hitscan, the client resolves the shot and hands the server
+-- a hit position, so there is no flight time to lead. feeding it a quarter
+-- of a second of travel lead aimed a couple of studs ahead of a walking
+-- target and every shot sailed past their nose.
 --
--- nothing is clamped down to nothing any more; the only guard is a sane
--- ceiling so a teleport spike cannot fling the camera off the map.
+-- what actually needs compensating is the network, nothing else:
+--   * the body you see was drawn from a snapshot that is one trip old
+--   * so lead by velocity * round trip time, and only by that
+-- typical MM2 ping is 60-120ms, which on a sprinting player works out to
+-- roughly one to three studs. small, but it is the difference between a
+-- body shot and a miss.
+--
+-- second half of the fix: the camera. an exponential lerp at response 26
+-- closes about a third of the gap per frame, so against a moving target it
+-- sits permanently behind. the response is high enough now to actually
+-- arrive, and the last stretch snaps once the error is under a degree.
 local AIM_RENDER_STEP_NAME = "BlackAlibiPredictionAimbot"
-local AIM_RESPONSE = 26
-local BULLET_TRAVEL_SPEED = 260   -- studs per second, tuned for the MM2 revolver
-local MAX_LEAD_TIME = 0.75
-local MAX_LEAD_DISTANCE = 42      -- guard against a replication spike, not a real cap
+local AIM_RESPONSE = 55           -- fast enough to land on the target, not a hard teleport
+local AIM_SNAP_DEGREES = 1.2      -- inside this the camera is placed exactly
+local MAX_LEAD_TIME = 0.35        -- guard for a lag spike, never a working value
+local MAX_LEAD_DISTANCE = 14
 local WORLD_GRAVITY = workspace.Gravity or 196.2
 local SmoothedVelocityByPlayer = setmetatable({}, {__mode = "k"})
-local CachedNetworkLatencySeconds = 0.04
+local CachedNetworkLatencySeconds = 0.06
 local LastNetworkLatencyUpdate = 0
 
 local function GetNetworkLatencySeconds()
@@ -2284,41 +2345,31 @@ local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, Ta
     local RawVelocity = TargetRoot.AssemblyLinearVelocity
     local PreviousVelocity = SmoothedVelocityByPlayer[TargetPlayer] or RawVelocity
 
-    -- frame rate independent filter: reads the same at 30, 60 and 120 fps,
-    -- and one bad replication frame cannot yank the aim sideways
-    local VelocityBlend = 1 - math.exp(-16 * math.clamp(DeltaTime, 0, 0.1))
+    -- light filter only. heavy smoothing was hurting more than helping: a
+    -- player changing direction needs the aim to follow within a frame or
+    -- two, and MM2 replicates walking velocity cleanly enough to trust it
+    local VelocityBlend = 1 - math.exp(-30 * math.clamp(DeltaTime, 0, 0.1))
     local SmoothedVelocity = PreviousVelocity:Lerp(RawVelocity, VelocityBlend)
     SmoothedVelocityByPlayer[TargetPlayer] = SmoothedVelocity
 
-    local ActiveCamera = workspace.CurrentCamera
-    local CameraPosition = ActiveCamera and ActiveCamera.CFrame.Position or TargetPart.Position
     local BasePosition = TargetPart.Position
 
-    -- one-way replication delay, half the measured round trip
-    local NetworkLead = GetNetworkLatencySeconds() * 0.5
-    local Airborne = TargetHumanoid.FloorMaterial == Enum.Material.Air
+    -- hitscan weapon: the only delay in the chain is the network round trip
+    local LeadTime = math.clamp(GetNetworkLatencySeconds(), 0, MAX_LEAD_TIME)
 
-    -- iterate the intercept: each pass re-measures the distance against the
-    -- position the target will actually be at, not the one it is at now
-    local TravelTime = (BasePosition - CameraPosition).Magnitude / BULLET_TRAVEL_SPEED
-    local PredictedPosition = BasePosition
+    -- horizontal movement is what the walk controller replicates reliably
+    local HorizontalVelocity = Vector3.new(SmoothedVelocity.X, 0, SmoothedVelocity.Z)
+    local LeadOffset = HorizontalVelocity * LeadTime
 
-    for _ = 1, 3 do
-        local TotalLeadTime = math.clamp(TravelTime + NetworkLead, 0, MAX_LEAD_TIME)
-
-        PredictedPosition = BasePosition + (SmoothedVelocity * TotalLeadTime)
-
-        -- gravity only bends the path while they are off the ground
-        if Airborne then
-            PredictedPosition = PredictedPosition
-                - Vector3.new(0, 0.5 * WORLD_GRAVITY * TotalLeadTime * TotalLeadTime, 0)
-        end
-
-        TravelTime = (PredictedPosition - CameraPosition).Magnitude / BULLET_TRAVEL_SPEED
+    -- while they are in the air the vertical channel matters too, and it is
+    -- a plain ballistic step, no intercept solving involved
+    if TargetHumanoid.FloorMaterial == Enum.Material.Air then
+        local VerticalStep = (SmoothedVelocity.Y * LeadTime)
+            - (0.5 * WORLD_GRAVITY * LeadTime * LeadTime)
+        LeadOffset = LeadOffset + Vector3.new(0, math.clamp(VerticalStep, -6, 6), 0)
     end
 
-    -- sanity guard: a teleport or a lag spike must not throw the camera away
-    local LeadOffset = PredictedPosition - BasePosition
+    -- a teleport or a lag spike must never throw the camera across the map
     if LeadOffset.Magnitude > MAX_LEAD_DISTANCE then
         LeadOffset = LeadOffset.Unit * MAX_LEAD_DISTANCE
     end
@@ -2361,9 +2412,27 @@ local function StartAimbot()
             DeltaTime
         )
 
-        local DesiredCameraCFrame = CFrame.new(ActiveCamera.CFrame.Position, PredictedPosition)
-        local AimAlpha = 1 - math.exp(-AIM_RESPONSE * math.clamp(DeltaTime, 0, 0.1))
-        ActiveCamera.CFrame = ActiveCamera.CFrame:Lerp(DesiredCameraCFrame, AimAlpha)
+        local CameraPosition = ActiveCamera.CFrame.Position
+        local DesiredCameraCFrame = CFrame.new(CameraPosition, PredictedPosition)
+
+        -- how far off are we, in degrees? once the error is small the lerp
+        -- crawls, and that residual is exactly what makes a lock "almost"
+        -- hit a walking target. inside the snap window just place the camera.
+        local CurrentLook = ActiveCamera.CFrame.LookVector
+        local DesiredLook = (PredictedPosition - CameraPosition)
+        if DesiredLook.Magnitude < 0.01 then
+            return
+        end
+        DesiredLook = DesiredLook.Unit
+
+        local AngleError = math.deg(math.acos(math.clamp(CurrentLook:Dot(DesiredLook), -1, 1)))
+
+        if AngleError <= AIM_SNAP_DEGREES then
+            ActiveCamera.CFrame = DesiredCameraCFrame
+        else
+            local AimAlpha = 1 - math.exp(-AIM_RESPONSE * math.clamp(DeltaTime, 0, 0.1))
+            ActiveCamera.CFrame = ActiveCamera.CFrame:Lerp(DesiredCameraCFrame, AimAlpha)
+        end
     end)
 end
 
@@ -3032,11 +3101,11 @@ UpdateNotes.Size = UDim2.new(1, -28, 0, 130)
 UpdateNotes.Position = UDim2.new(0, 14, 0, 198)
 UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
-    "FIXED    Real prediction: intercept solve plus ping lead",
-    "FIXED    Anti Fling no longer freezes other players",
-    "ADDED    Role Tracers, Auto Equip on sight, Auto Escape",
-    "ADDED    Role reveal slides in at round start, gone in 4s",
-    "MOVED    Server Hop to Settings, away from the teleports",
+    "FIXED    Aim lead: the gun is hitscan, so ping is the lead",
+    "FIXED    Camera snaps the last degree instead of trailing",
+    "FIXED    Tracers hold on targets behind you, pinned to the edge",
+    "FIXED    Role reveal fires during the fade, before the round",
+    "FIXED    Nothing can be dragged off the edge of the screen",
 }, string.char(10))
 UpdateNotes.TextColor3 = Palette.TextDim
 UpdateNotes.Font = Enum.Font.Code
@@ -4390,10 +4459,19 @@ RefreshMyRoleHud = function()
         return
     end
 
-    -- ResolveRoleFor covers the packet, the hero override and the fallback,
-    -- so the reveal agrees with the tags hanging over everyone else
-    local MyRoleKey = ResolveRoleFor(LocalPlayer)
-    if MyRoleKey == "Unknown" then
+    -- the packet carries the role first, before anything else knows.
+    -- read it directly: ResolveRoleFor would fall through to "Innocent" for
+    -- anyone breathing once the round is live, and that is a guess, not the
+    -- reveal. only a real assignment is worth putting on screen.
+    local MyRoleKey = RoleFromPacket[LocalPlayer.UserId]
+
+    if not MyRoleKey then
+        -- no packet yet: the equipment check still catches a knife or gun
+        -- landing in your hands during the fade
+        MyRoleKey = EquipmentGuess(LocalPlayer)
+    end
+
+    if not MyRoleKey then
         return
     end
 
@@ -4402,6 +4480,20 @@ RefreshMyRoleHud = function()
         PlayRoleReveal(MyRoleKey)
     end
 end
+
+-- MM2 hands the roles out during the black fade, a couple of seconds before
+-- the map unlocks and you can move. that fade is the window the reveal is
+-- meant to land in. events alone were missing it on slower joins, so a light
+-- watcher polls the packet table while the switch is on and fires the card
+-- the instant a role appears.
+task.spawn(function()
+    while CoreIsAlive do
+        task.wait(0.3)
+        if CoreIsAlive and MyRoleHudEnabled and RefreshMyRoleHud then
+            RefreshMyRoleHud()
+        end
+    end
+end)
 
 ApplyMyRoleHudState = function(NewState)
     if NewState then
