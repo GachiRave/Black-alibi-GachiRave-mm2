@@ -15,7 +15,7 @@ local SCRIPT_RELEASE_STATUS = "STABLE RELEASE"
 local TARGET_GAME_TITLE = "Murder Mystery 2"
 
 local WINDOW_WIDTH = 460
-local WINDOW_HEIGHT = 380 -- trimmed so the header stays reachable on short phone screens
+local WINDOW_HEIGHT = 296 -- short on purpose: every page scrolls, so the header stays in thumb reach
 local HEADER_HEIGHT = 42
 local SIDEBAR_WIDTH = 104
 
@@ -389,16 +389,39 @@ local TabSettings = CreateTabButton("Settings", true, 0)
 local PageWidth = WINDOW_WIDTH - SIDEBAR_WIDTH
 local PageHeight = WINDOW_HEIGHT - HEADER_HEIGHT - 1
 
+-- every page is a scroller inside a fading shell. the shell handles the tab
+-- transition, the scroller holds the controls, so a short window can still
+-- carry a long page: you just drag it up.
+local PageShells = {}
+local PAGE_CANVAS_HEIGHT = 340
+
 local function CreatePage(PageName)
-    local Page = Instance.new("CanvasGroup")
+    local Shell = Instance.new("CanvasGroup")
+    Shell.Name = PageName .. "Shell"
+    Shell.Size = UDim2.fromOffset(PageWidth, PageHeight)
+    Shell.Position = UDim2.new(0, SIDEBAR_WIDTH, 0, HEADER_HEIGHT + 1)
+    Shell.BackgroundTransparency = 1
+    Shell.GroupTransparency = 1
+    Shell.Visible = false
+    Shell.ZIndex = 3
+    Shell.Parent = MainWindow
+
+    local Page = Instance.new("ScrollingFrame")
     Page.Name = PageName
-    Page.Size = UDim2.fromOffset(PageWidth, PageHeight)
-    Page.Position = UDim2.new(0, SIDEBAR_WIDTH, 0, HEADER_HEIGHT + 1)
+    Page.Size = UDim2.fromScale(1, 1)
     Page.BackgroundTransparency = 1
-    Page.GroupTransparency = 1
-    Page.Visible = false
+    Page.BorderSizePixel = 0
+    Page.ScrollBarThickness = 3
+    Page.ScrollBarImageColor3 = Palette.Accent
+    Page.ScrollBarImageTransparency = 0.4
+    Page.ScrollingDirection = Enum.ScrollingDirection.Y
+    -- fixed canvas, not automatic: bottom anchored rows land predictably and
+    -- there is no feedback loop between canvas height and scale sized children
+    Page.CanvasSize = UDim2.fromOffset(0, PAGE_CANVAS_HEIGHT)
     Page.ZIndex = 3
-    Page.Parent = MainWindow
+    Page.Parent = Shell
+
+    PageShells[Page] = Shell
     return Page
 end
 
@@ -409,6 +432,9 @@ local PageTeleport = CreatePage("PageTeleport")
 local PageExtra = CreatePage("PageExtra")
 local PageAuthor = CreatePage("PageAuthor")
 local PageSettings = CreatePage("PageSettings")
+
+-- combat carries two full panels, it needs a taller canvas than the rest
+PageCombat.CanvasSize = UDim2.fromOffset(0, 424)
 
 -- forward declarations for things pages hand to each other
 local LocateDroppedGun
@@ -429,8 +455,8 @@ local TryAutoGrabGun
 
 local ActiveTabButton = TabEsp
 local ActivePage = PageEsp
-PageEsp.Visible = true
-PageEsp.GroupTransparency = 0
+PageShells[PageEsp].Visible = true
+PageShells[PageEsp].GroupTransparency = 0
 
 -- outgoing page is cut instantly, only the incoming one slides and fades
 local PageSlideIn = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
@@ -457,16 +483,18 @@ local function SwitchTab(TargetButton, TargetPage)
     })
 
     if ActivePage and ActivePage ~= TargetPage then
-        ActivePage.Visible = false
+        PageShells[ActivePage].Visible = false
     end
     ActivePage = TargetPage
 
-    TargetPage.Position = PageRestPosition + UDim2.fromOffset(10, 0)
-    TargetPage.GroupTransparency = 1
-    TargetPage.Visible = true
+    local TargetShell = PageShells[TargetPage]
+    TargetPage.CanvasPosition = Vector2.zero -- always open a tab at the top
+    TargetShell.Position = PageRestPosition + UDim2.fromOffset(10, 0)
+    TargetShell.GroupTransparency = 1
+    TargetShell.Visible = true
 
-    Animate(TargetPage, PageSlideIn, {GroupTransparency = 0})
-    Animate(TargetPage, PageSlideIn, {Position = PageRestPosition})
+    Animate(TargetShell, PageSlideIn, {GroupTransparency = 0})
+    Animate(TargetShell, PageSlideIn, {Position = PageRestPosition})
 end
 
 TabEsp.Activated:Connect(function() SwitchTab(TabEsp, PageEsp) end)
@@ -1429,26 +1457,7 @@ CombatTitle.TextXAlignment = Enum.TextXAlignment.Left
 CombatTitle.ZIndex = 4
 CombatTitle.Parent = PageCombat
 
--- both panels live in a scroller: the sheriff side grew a third switch and
--- fixed panels were already brushing the bottom edge of the window
-local CombatScroll = Instance.new("ScrollingFrame")
-CombatScroll.Name = "CombatScroll"
-CombatScroll.Position = UDim2.new(0, 0, 0, 34)
-CombatScroll.Size = UDim2.new(1, 0, 1, -40)
-CombatScroll.BackgroundTransparency = 1
-CombatScroll.BorderSizePixel = 0
-CombatScroll.ScrollBarThickness = 2
-CombatScroll.ScrollBarImageColor3 = Palette.Accent
-CombatScroll.ScrollingDirection = Enum.ScrollingDirection.Y
-CombatScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-CombatScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-CombatScroll.ZIndex = 4
-CombatScroll.Parent = PageCombat
-
-local CombatScrollPadding = Instance.new("UIPadding")
-CombatScrollPadding.PaddingBottom = UDim.new(0, 10)
-CombatScrollPadding.Parent = CombatScroll
-
+-- the page itself scrolls now, so the panels just stack down it
 local function CreateRolePanel(TitleText, AccentColor, TopOffset, PanelHeight)
     local Panel = Instance.new("Frame")
     Panel.Size = UDim2.new(1, -28, 0, PanelHeight)
@@ -1456,7 +1465,7 @@ local function CreateRolePanel(TitleText, AccentColor, TopOffset, PanelHeight)
     Panel.BackgroundColor3 = Color3.fromRGB(23, 23, 27)
     Panel.BorderSizePixel = 0
     Panel.ZIndex = 4
-    Panel.Parent = CombatScroll
+    Panel.Parent = PageCombat
     AddCorner(Panel, 8)
     AddStroke(Panel, Palette.Stroke, 0.45)
 
@@ -1571,7 +1580,7 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
 end
 
 -- ---------- murderer panel ----------
-local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 0, 214)
+local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 214)
 
 local RangeLabel = Instance.new("TextLabel")
 RangeLabel.Size = UDim2.new(1, -78, 0, 14)
@@ -2187,7 +2196,7 @@ Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 176,
 end)
 
 -- ---------- sheriff panel ----------
-local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 226, 142)
+local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 258, 142)
 
 -- the aim only runs with the revolver actually in hand
 local function GunIsEquipped()
@@ -3478,7 +3487,13 @@ end)
 end
 RunBuilder("Settings")
 
--- ============ minimize bar ============
+-- ============ minimize bar and close dialog ============
+-- kept inside a builder on purpose: this block owns about twenty locals and
+-- the main chunk is close to the Luau limit of 200 per function. only the
+-- handful of references the shutdown needs leaves through ShellRefs.
+local ShellRefs = {}
+
+Builders.Shell = function()
 local MinimizeBar = Instance.new("CanvasGroup")
 MinimizeBar.Name = "MinimizeBar"
 MinimizeBar.AnchorPoint = Vector2.new(0.5, 0)
@@ -3693,6 +3708,14 @@ end
 HeaderClose.Activated:Connect(OpenConfirm)
 BarClose.Activated:Connect(OpenConfirm)
 ConfirmCancel.Activated:Connect(CloseConfirm)
+
+ShellRefs.MinimizeBar = MinimizeBar
+ShellRefs.ConfirmOverlay = ConfirmOverlay
+ShellRefs.ConfirmDialog = ConfirmDialog
+ShellRefs.ConfirmAccept = ConfirmAccept
+ShellRefs.CloseConfirm = CloseConfirm
+end
+RunBuilder("Shell")
 
 -- ============================================================
 -- ROLE ENGINE
@@ -5033,9 +5056,17 @@ local function ShutdownCore()
     TweenService:Create(BackdropBlur, TweenFast, {Size = 0}):Play()
     TweenService:Create(DimLayer, TweenFast, {BackgroundTransparency = 1}):Play()
     TweenService:Create(MainWindow, TweenFast, {GroupTransparency = 1}):Play()
-    TweenService:Create(MinimizeBar, TweenFast, {GroupTransparency = 1}):Play()
-    TweenService:Create(ConfirmOverlay, TweenFast, {BackgroundTransparency = 1}):Play()
-    TweenService:Create(ConfirmDialog, TweenFast, {GroupTransparency = 1}):Play()
+
+    -- the shell builder may have failed on a picky executor, so check first
+    if ShellRefs.MinimizeBar then
+        TweenService:Create(ShellRefs.MinimizeBar, TweenFast, {GroupTransparency = 1}):Play()
+    end
+    if ShellRefs.ConfirmOverlay then
+        TweenService:Create(ShellRefs.ConfirmOverlay, TweenFast, {BackgroundTransparency = 1}):Play()
+    end
+    if ShellRefs.ConfirmDialog then
+        TweenService:Create(ShellRefs.ConfirmDialog, TweenFast, {GroupTransparency = 1}):Play()
+    end
 
     task.delay(0.26, function()
         pcall(function() BackdropBlur:Destroy() end)
@@ -5043,10 +5074,14 @@ local function ShutdownCore()
     end)
 end
 
-ConfirmAccept.Activated:Connect(ShutdownCore)
+if ShellRefs.ConfirmAccept then
+    ShellRefs.ConfirmAccept.Activated:Connect(ShutdownCore)
+end
 
 RunPanicExit = function()
-    CloseConfirm()
+    if ShellRefs.CloseConfirm then
+        ShellRefs.CloseConfirm()
+    end
     ShutdownCore()
 end
 
