@@ -11,7 +11,7 @@
 local SCRIPT_BRAND_NAME = "Black Alibi MM2"
 local SCRIPT_VERSION_TAG = "1.0.2"
 local SCRIPT_AUTHOR_LINE = "by GachiRave"
-local SCRIPT_RELEASE_STATUS = "STABLE RELEASE"
+local SCRIPT_RELEASE_STATUS = "STABLE · BUG FIXES"
 local TARGET_GAME_TITLE = "Murder Mystery 2"
 
 local WINDOW_WIDTH = 460
@@ -1359,6 +1359,7 @@ local SafeCFrame = nil
 local NextSafePointTime = 0
 local PhasedParts = {}
 local PhaseConnection = nil
+local PhaseWatchers = {}
 local RestoreOwnCollisions
 
 ClearAntiFlingConnections = function()
@@ -1370,6 +1371,10 @@ ClearAntiFlingConnections = function()
         PhaseConnection:Disconnect()
         PhaseConnection = nil
     end
+    for _, Watcher in ipairs(PhaseWatchers) do
+        Watcher:Disconnect()
+    end
+    table.clear(PhaseWatchers)
     RestoreOwnCollisions()
     SafeCFrame = nil
 end
@@ -1433,6 +1438,52 @@ local function StartAntiFling()
         end)
     end
 
+    -- other characters are handled by events, never per frame. writing to
+    -- fifteen parts on eight players sixty times a second is what made the
+    -- lobby look frozen: the client was simply choking on property writes.
+    -- once per spawn is enough, collisions do not turn themselves back on.
+    local function PhaseOtherCharacter(OtherCharacter)
+        if not OtherCharacter then
+            return
+        end
+        for _, Limb in ipairs(OtherCharacter:GetChildren()) do
+            if Limb:IsA("BasePart") and Limb.CanCollide then
+                if PhasedParts[Limb] == nil then
+                    PhasedParts[Limb] = Limb.CanCollide
+                end
+                pcall(function()
+                    Limb.CanCollide = false
+                end)
+            end
+        end
+    end
+
+    local function WatchOtherPlayer(OtherPlayer)
+        if OtherPlayer == LocalPlayer then
+            return
+        end
+        PhaseOtherCharacter(OtherPlayer.Character)
+        table.insert(PhaseWatchers, OtherPlayer.CharacterAdded:Connect(function(NewCharacter)
+            if not AntiFlingEnabled then
+                return
+            end
+            NewCharacter:WaitForChild("HumanoidRootPart", 10)
+            task.wait(0.4)
+            if AntiFlingEnabled then
+                PhaseOtherCharacter(NewCharacter)
+            end
+        end))
+    end
+
+    for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+        WatchOtherPlayer(OtherPlayer)
+    end
+    table.insert(PhaseWatchers, PlayersService.PlayerAdded:Connect(function(NewPlayer)
+        if AntiFlingEnabled then
+            WatchOtherPlayer(NewPlayer)
+        end
+    end))
+
     AntiFlingConnection = RunService.Stepped:Connect(function()
         if not CoreIsAlive or not AntiFlingEnabled then
             return
@@ -1446,7 +1497,7 @@ local function StartAntiFling()
             return
         end
 
-        -- MM2 re-enables collisions on its own during some animations
+        -- your own body is cheap to keep in check, it is one character
         ApplyPhaseToCharacter(Character)
 
         local LinearVelocity = RootPart.AssemblyLinearVelocity
@@ -1818,16 +1869,46 @@ end
 
 local KillAuraConnection = nil
 
+-- same skin problem the throw had: MM2 renames the blade per skin, so a
+-- hardcoded "Knife" lookup left kill aura and kill all dead for anyone who
+-- owns a Chroma or an event knife. any handled tool that is not the revolver
+-- counts, and it gets pulled into the hand before the touch is fired.
 local function GetHeldKnife()
     local Character = LocalPlayer.Character
-    if Character then
-        local HeldKnife = Character:FindFirstChild("Knife")
-        if HeldKnife then
-            return HeldKnife
+
+    local function PickFrom(Container)
+        if not Container then
+            return nil
         end
+        local ExactMatch = Container:FindFirstChild("Knife")
+        if ExactMatch and ExactMatch:IsA("Tool") then
+            return ExactMatch
+        end
+        for _, Item in ipairs(Container:GetChildren()) do
+            if Item:IsA("Tool") and Item:FindFirstChild("Handle") then
+                local LowerName = string.lower(Item.Name)
+                if LowerName ~= "gun" and LowerName ~= "revolver" then
+                    return Item
+                end
+            end
+        end
+        return nil
     end
-    local Backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
-    return Backpack and Backpack:FindFirstChild("Knife")
+
+    local HeldKnife = PickFrom(Character)
+    if HeldKnife then
+        return HeldKnife
+    end
+
+    -- a blade sitting in the backpack cannot register a hit, so equip it
+    local PackedKnife = PickFrom(LocalPlayer:FindFirstChildOfClass("Backpack"))
+    if PackedKnife and Character then
+        pcall(function()
+            PackedKnife.Parent = Character
+        end)
+        return PackedKnife
+    end
+    return PackedKnife
 end
 
 -- one visibility test shared by kill aura, sheriff aim and the knife throw.
@@ -1933,11 +2014,19 @@ local function StartKillAura()
                         end
 
                         if Allowed then
+                            -- swing, then touch. the same rule as the throw
                             pcall(function()
+                                Knife:Activate()
                                 TouchFunction(OtherRoot, Handle, 0)
                                 TouchFunction(OtherRoot, Handle, 1)
                             end)
-                            NextSwingTime = os.clock() + 0.12
+                            NextSwingTime = os.clock() + 0.14
+                            -- CRASH FIX: one target per pass. the old loop
+                            -- kept going and fired the engine touch call for
+                            -- every player in range on the same frame, which
+                            -- is what took the client down the moment you
+                            -- turned murderer in a busy lobby.
+                            break
                         end
                     end
                 end
@@ -2153,13 +2242,16 @@ local function EnsureKnifeInHand()
     end
 
     local PackedKnife = FindKnifeToolIn(LocalPlayer:FindFirstChildOfClass("Backpack"))
-    local Humanoid = GetLocalHumanoid()
-    if not PackedKnife or not Humanoid then
+    local Character = LocalPlayer.Character
+    if not PackedKnife or not Character then
         return nil
     end
 
+    -- reparenting is what every working MM2 script does. EquipTool goes
+    -- through the humanoid's own state machine and several mobile executors
+    -- simply drop it, the direct parent swap always lands.
     pcall(function()
-        Humanoid:EquipTool(PackedKnife)
+        PackedKnife.Parent = Character
     end)
 
     -- give the tool a few frames to actually land in the hand
@@ -2266,7 +2358,15 @@ local function RunKnifeThrow()
 
         RunService.Heartbeat:Wait()
 
-        -- this touch is what actually kills: straight into the torso
+        -- THE MISSING PIECE.
+        -- the blade only counts a hit while it is mid swing. every working
+        -- MM2 kill script calls Activate first and then fires the touch:
+        -- without the swing the server sees a handle brushing a torso and
+        -- throws it away, which is exactly why this button did nothing.
+        pcall(function()
+            Knife:Activate()
+        end)
+
         if TouchFunction then
             pcall(function()
                 TouchFunction(TargetTorso, Handle, 0)
@@ -3184,7 +3284,7 @@ local UpdateTitle = Instance.new("TextLabel")
 UpdateTitle.Size = UDim2.new(1, -28, 0, 16)
 UpdateTitle.Position = UDim2.new(0, 14, 0, 178)
 UpdateTitle.BackgroundTransparency = 1
-UpdateTitle.Text = "UPDATE 1.0.2 FINAL"
+UpdateTitle.Text = "1.0.2 · BUG FIXES"
 UpdateTitle.TextColor3 = Color3.fromRGB(111, 161, 255)
 UpdateTitle.Font = Enum.Font.Code
 UpdateTitle.TextSize = 11
@@ -3193,15 +3293,22 @@ UpdateTitle.ZIndex = 4
 UpdateTitle.Parent = PageAuthor
 
 local UpdateNotes = Instance.new("TextLabel")
-UpdateNotes.Size = UDim2.new(1, -28, 0, 130)
+UpdateNotes.Size = UDim2.new(1, -28, 0, 150)
 UpdateNotes.Position = UDim2.new(0, 14, 0, 198)
 UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
-    "FIXED    Client crash on becoming murderer, sweeps throttled",
-    "FIXED    Knife throw reads skinned knives, not just Knife",
-    "FIXED    Role card no longer pops when you pick the gun up",
-    "ADDED    Anti Fling now phases you through other players",
-    "FIXED    Aim lead uses ping only, the MM2 gun is hitscan",
+    "CRASH  Kill aura fired a touch at every player in range on",
+    "       the same frame. one target per pass now.",
+    "CRASH  Role sweeps ran on every backpack event. throttled",
+    "       to one pass per 0.15s with a trailing call.",
+    "KNIFE  Activate() was never called, so the server dropped",
+    "       the hit. swing first, then touch.",
+    "KNIFE  Skinned blades read as no knife. any handled tool",
+    "       that is not the revolver counts, equipped by reparent.",
+    "FLING  Per frame writes to every body froze the lobby.",
+    "       Event driven now, one pass per spawn.",
+    "ROLE   Card no longer pops when you pick the gun up.",
+    "AIM    Lead is ping based, the MM2 gun is hitscan.",
 }, string.char(10))
 UpdateNotes.TextColor3 = Palette.TextDim
 UpdateNotes.Font = Enum.Font.Code
