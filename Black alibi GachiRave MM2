@@ -111,35 +111,42 @@ local function MakeDraggable(TargetFrame)
     local Dragging = false
     local PointerOrigin, FrameOrigin
 
-    -- 1.0.3: the old clamp only guarded the top edge and let 42px of the
-    -- window hang on at the sides, so a sideways flick still buried it in
-    -- the bezel. everything is kept fully on screen now, all four edges.
-    local function ClampToScreen(ProposedX, ProposedY)
+    -- THE JUMP.
+    -- the old version rebuilt Position from AbsolutePosition the moment you
+    -- touched the surface. absolute pixels and UDim2 offsets are not the
+    -- same origin once a scale component or the top inset is involved, so
+    -- the window snapped by that difference before it moved a single pixel.
+    -- nothing is converted now: the drag remembers the UDim2 it started on
+    -- and adds the pointer delta straight onto it, so the surface stays
+    -- exactly under your finger.
+    local StartPosition = nil
+    local StartTopLeft = nil
+
+    local function ApplyDrag(Delta)
         local ActiveCamera = workspace.CurrentCamera
         local ViewportSize = ActiveCamera and ActiveCamera.ViewportSize or Vector2.new(1280, 720)
         local FrameSize = TargetFrame.AbsoluteSize
-        local Anchor = TargetFrame.AnchorPoint
 
-        -- work in top left corner space, clamp there, convert back
-        local CornerX = ProposedX - (FrameSize.X * Anchor.X)
-        local CornerY = ProposedY - (FrameSize.Y * Anchor.Y)
-
-        -- a surface wider than the screen would give an inverted range, so
-        -- max is floored at min and it simply pins to the left or the top
+        -- clamp in pixel space, where the screen edges actually live
         local MaxX = math.max(ViewportSize.X - FrameSize.X, 0)
         local MaxY = math.max(ViewportSize.Y - FrameSize.Y, 0)
+        local ClampedX = math.clamp(StartTopLeft.X + Delta.X, 0, MaxX)
+        local ClampedY = math.clamp(StartTopLeft.Y + Delta.Y, 0, MaxY)
 
-        CornerX = math.clamp(CornerX, 0, MaxX)
-        CornerY = math.clamp(CornerY, 0, MaxY)
-
-        return CornerX + (FrameSize.X * Anchor.X), CornerY + (FrameSize.Y * Anchor.Y)
+        -- feed back only how far it was allowed to travel, keeping whatever
+        -- scale the surface was built with intact
+        TargetFrame.Position = UDim2.new(
+            StartPosition.X.Scale, StartPosition.X.Offset + (ClampedX - StartTopLeft.X),
+            StartPosition.Y.Scale, StartPosition.Y.Offset + (ClampedY - StartTopLeft.Y)
+        )
     end
 
     TargetFrame.InputBegan:Connect(function(Input)
         if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
             Dragging = true
             PointerOrigin = Input.Position
-            FrameOrigin = TargetFrame.AbsolutePosition + (TargetFrame.AbsoluteSize * TargetFrame.AnchorPoint)
+            StartPosition = TargetFrame.Position
+            StartTopLeft = TargetFrame.AbsolutePosition
             Input.Changed:Connect(function()
                 if Input.UserInputState == Enum.UserInputState.End then
                     Dragging = false
@@ -149,30 +156,37 @@ local function MakeDraggable(TargetFrame)
     end)
 
     UserInputService.InputChanged:Connect(function(Input)
-        if not Dragging then
+        if not Dragging or not StartPosition then
             return
         end
         if Input.UserInputType ~= Enum.UserInputType.MouseMovement and Input.UserInputType ~= Enum.UserInputType.Touch then
             return
         end
-
-        local Delta = Input.Position - PointerOrigin
-        local ClampedX, ClampedY = ClampToScreen(FrameOrigin.X + Delta.X, FrameOrigin.Y + Delta.Y)
-
-        -- offsets only: scale would drift the moment the viewport changes
-        TargetFrame.Position = UDim2.fromOffset(ClampedX, ClampedY)
+        ApplyDrag(Input.Position - PointerOrigin)
     end)
 
-    -- rotating the phone shrinks the viewport, so re-clamp on resize
+    -- rotating the phone shrinks the viewport. only nudge a surface that is
+    -- actually hanging off the edge, and never while a drag is in progress.
     local ActiveCamera = workspace.CurrentCamera
     if ActiveCamera then
         ActiveCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
-            if not TargetFrame.Parent then
+            if Dragging or not TargetFrame.Parent then
                 return
             end
-            local CurrentCenter = TargetFrame.AbsolutePosition + (TargetFrame.AbsoluteSize * TargetFrame.AnchorPoint)
-            local ClampedX, ClampedY = ClampToScreen(CurrentCenter.X, CurrentCenter.Y)
-            TargetFrame.Position = UDim2.fromOffset(ClampedX, ClampedY)
+
+            local ViewportSize = ActiveCamera.ViewportSize
+            local FrameSize = TargetFrame.AbsoluteSize
+            local TopLeft = TargetFrame.AbsolutePosition
+            local OverflowX = math.clamp(TopLeft.X, 0, math.max(ViewportSize.X - FrameSize.X, 0)) - TopLeft.X
+            local OverflowY = math.clamp(TopLeft.Y, 0, math.max(ViewportSize.Y - FrameSize.Y, 0)) - TopLeft.Y
+
+            if OverflowX ~= 0 or OverflowY ~= 0 then
+                local Current = TargetFrame.Position
+                TargetFrame.Position = UDim2.new(
+                    Current.X.Scale, Current.X.Offset + OverflowX,
+                    Current.Y.Scale, Current.Y.Offset + OverflowY
+                )
+            end
         end)
     end
 end
@@ -1228,6 +1242,7 @@ local NextSafePointTime = 0
 local PhasedParts = {}
 local PhaseConnection = nil
 local PhaseWatchers = {}
+local NextPhaseSweep = 0
 local RestoreOwnCollisions
 
 ClearAntiFlingConnections = function()
@@ -1340,10 +1355,16 @@ local function StartAntiFling()
         end)
     end
 
-    -- other characters are handled by events, never per frame. writing to
-    -- fifteen parts on eight players sixty times a second is what made the
-    -- lobby look frozen: the client was simply choking on property writes.
-    -- once per spawn is enough, collisions do not turn themselves back on.
+    -- WHY IT KEPT DYING.
+    -- other bodies were phased once, on spawn, and never again. but MM2 and
+    -- the engine put those collisions back all the time: an animation ends,
+    -- a limb streams back in, a tool is equipped. after a few of those you
+    -- were solid again and had to flip the switch to re-run the pass. that
+    -- is exactly the "works twice then stops" you hit.
+    --
+    -- so it is re-armed on a slow timer instead: twice a second, which is
+    -- nothing for the client, and it can never silently wear off. still not
+    -- per frame, that is what froze the lobby in the build before this one.
     local function PhaseOtherCharacter(OtherCharacter)
         if not OtherCharacter then
             return
@@ -1399,11 +1420,22 @@ local function StartAntiFling()
             return
         end
 
-        -- re-arm only when the game has undone it, checked off one part
-        -- instead of rewriting the whole body every frame
+        -- re-arm your own body only when the game has undone it, checked
+        -- off one part instead of rewriting everything every frame
         local UpperTorso = Character:FindFirstChild("UpperTorso") or Character:FindFirstChild("Torso")
         if UpperTorso and UpperTorso.CanCollide then
             ApplyPhaseToCharacter(Character)
+        end
+
+        -- and sweep everyone else twice a second so the phase cannot wear
+        -- off without you noticing
+        if os.clock() >= NextPhaseSweep then
+            NextPhaseSweep = os.clock() + 0.5
+            for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+                if OtherPlayer ~= LocalPlayer then
+                    PhaseOtherCharacter(OtherPlayer.Character)
+                end
+            end
         end
 
         local LinearVelocity = RootPart.AssemblyLinearVelocity
@@ -3172,6 +3204,10 @@ UpdateNotes.Text = table.concat({
     "       walking pace now gets no lead at all",
     "AIM    Needs Shift Lock on mobile, the panel says so",
     "REMOVED Trolling Float, it did not belong here",
+    "FLING  Phase wore off after a few passes, other bodies were",
+    "       only done once on spawn. re-armed twice a second now",
+    "UI     Dragging no longer jumps: the window keeps its own",
+    "       UDim2 instead of being rebuilt from absolute pixels",
     "NEW    Auto Equip Knife In Range, draws the blade only when",
     "       somebody enters the kill aura radius",
     "EXTRA  Auto Grab Gun collects a drop from across the map",
@@ -5355,4 +5391,4 @@ task.spawn(function()
     end
 end)
 
--- by GachiRave · 1.0.2 · stable release
+-- by GachiRave · 1.0.2 · stable release`
