@@ -1498,166 +1498,10 @@ end)
 end
 RunBuilder("Spin")
 
--- ---- trolling: float ----
--- this started life as a fly and never flew properly: MM2 fights any
--- BodyVelocity on the root, so instead of clean flight you get a hovering,
--- drifting body that skims over the map. it turned out to be far more fun
--- than a real fly, so it ships as what it actually is, a troll toy.
--- steering comes from Humanoid.MoveDirection, which the mobile joystick
--- already fills in, and the pad handles up and down.
-local TrollFloatEnabled = false
-local StopTrollFloat
+-- the trolling float was cut in the final pass. it was a leftover from the
+-- fly experiment and had no place in a script meant to be taken seriously.
 
-Builders.TrollFloat = function()
-local FLOAT_SPEED = 65
-local FloatConnection = nil
-local FloatVelocity = nil
-local FloatPad = nil
-local VerticalDirection = 0
 
-local function TearDownFloatParts()
-    if FloatVelocity then
-        FloatVelocity:Destroy()
-        FloatVelocity = nil
-    end
-
-    local Character = LocalPlayer.Character
-    local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
-    if Humanoid then
-        Humanoid.PlatformStand = false
-    end
-end
-
-StopTrollFloat = function()
-    if FloatConnection then
-        FloatConnection:Disconnect()
-        FloatConnection = nil
-    end
-    VerticalDirection = 0
-    TearDownFloatParts()
-    if FloatPad then
-        FloatPad.Visible = false
-    end
-end
-
--- up / down pad, only on screen while floating
-local function BuildFloatPad()
-    if FloatPad then
-        return FloatPad
-    end
-
-    local Pad = Instance.new("Frame")
-    Pad.Name = "TrollFloatPad"
-    Pad.AnchorPoint = Vector2.new(1, 1)
-    Pad.Position = UDim2.new(1, -22, 1, -210)
-    Pad.Size = UDim2.fromOffset(56, 116)
-    Pad.BackgroundColor3 = Palette.Window
-    Pad.BackgroundTransparency = 0.15
-    Pad.BorderSizePixel = 0
-    Pad.Active = true
-    Pad.Visible = false
-    Pad.ZIndex = 40
-    Pad.Parent = RootGui
-    AddCorner(Pad, 12)
-    AddStroke(Pad, Palette.Accent, 0.4)
-    MakeDraggable(Pad)
-
-    local function CreatePadButton(Glyph, YOffset, Direction)
-        local Button = Instance.new("TextButton")
-        Button.Size = UDim2.new(1, -12, 0, 48)
-        Button.Position = UDim2.new(0, 6, 0, YOffset)
-        Button.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
-        Button.Text = Glyph
-        Button.TextColor3 = Palette.TextMain
-        Button.Font = Enum.Font.Code
-        Button.TextSize = 20
-        Button.AutoButtonColor = false
-        Button.ZIndex = 41
-        Button.Parent = Pad
-        AddCorner(Button, 9)
-
-        -- press and hold, release stops: a tap should not latch the climb
-        Button.InputBegan:Connect(function(Input)
-            if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
-                VerticalDirection = Direction
-                Animate(Button, TweenFast, {BackgroundColor3 = Palette.AccentSoft})
-            end
-        end)
-        Button.InputEnded:Connect(function(Input)
-            if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
-                VerticalDirection = 0
-                Animate(Button, TweenFast, {BackgroundColor3 = Color3.fromRGB(30, 30, 36)})
-            end
-        end)
-    end
-
-    CreatePadButton("+", 6, 1)
-    CreatePadButton("-", 62, -1)
-
-    FloatPad = Pad
-    return Pad
-end
-
-local function StartTrollFloat()
-    if FloatConnection then
-        return
-    end
-    BuildFloatPad().Visible = true
-
-    FloatConnection = RunService.Heartbeat:Connect(function()
-        if not CoreIsAlive or not TrollFloatEnabled then
-            return
-        end
-
-        local Character = LocalPlayer.Character
-        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-        local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
-        if not RootPart or not Humanoid or Humanoid.Health <= 0 then
-            TearDownFloatParts()
-            return
-        end
-
-        -- rebuild the mover if the body was replaced under us
-        if not FloatVelocity or FloatVelocity.Parent ~= RootPart then
-            if FloatVelocity then
-                FloatVelocity:Destroy()
-            end
-            FloatVelocity = Instance.new("BodyVelocity")
-            FloatVelocity.Name = "BlackAlibiFloat"
-            FloatVelocity.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-            FloatVelocity.P = 8000
-            FloatVelocity.Velocity = Vector3.zero
-            FloatVelocity.Parent = RootPart
-        end
-
-        Humanoid.PlatformStand = true
-
-        -- MoveDirection is already world space and already fed by the
-        -- joystick, the keyboard and the touch pad alike
-        local Horizontal = Humanoid.MoveDirection * FLOAT_SPEED
-        local Vertical = Vector3.new(0, VerticalDirection * FLOAT_SPEED, 0)
-        FloatVelocity.Velocity = Horizontal + Vertical
-    end)
-end
-
--- a respawn kills the mover, so let the loop rebuild it next frame
-LocalPlayer.CharacterAdded:Connect(function()
-    FloatVelocity = nil
-    if not TrollFloatEnabled then
-        return
-    end
-end)
-
-Setters.TrollFloat = CreateToggleRow(PagePlayer, "TROLLING · FLOAT", 280, function(NewState)
-    TrollFloatEnabled = NewState
-    if NewState then
-        StartTrollFloat()
-    else
-        StopTrollFloat()
-    end
-end)
-end
-RunBuilder("TrollFloat")
 
 -- the camera rebuilds on respawn, so the chosen zoom gets stamped back on
 LocalPlayer.CharacterAdded:Connect(function()
@@ -2339,7 +2183,7 @@ end)
 -- in Combat belongs to the sheriff and only draws an owned revolver.
 
 -- ---------- sheriff panel ----------
-local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 264, 146)
+local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 264, 196)
 
 -- the aim only runs with the revolver actually in hand
 local function GunIsEquipped()
@@ -2440,11 +2284,22 @@ local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, Ta
 
     local BasePosition = TargetPart.Position
 
-    -- hitscan weapon: the only delay in the chain is the network round trip
+    -- LEAD TIME.
+    -- the gun is hitscan, so there is no bullet flight to solve. what has to
+    -- be paid for is the network: the body you are drawing was replicated
+    -- one trip ago, and your shot needs another half trip to reach the
+    -- server. that full round trip is the whole error, and it is why a
+    -- walking target was always missed by about one body width.
     local LeadTime = math.clamp(GetNetworkLatencySeconds(), 0, MAX_LEAD_TIME)
 
-    -- horizontal movement is what the walk controller replicates reliably
+    -- a standing target must get zero lead. below walking pace the reading
+    -- is replication jitter, not movement, and leading it pushes the aim
+    -- off a target that is not going anywhere.
     local HorizontalVelocity = Vector3.new(SmoothedVelocity.X, 0, SmoothedVelocity.Z)
+    if HorizontalVelocity.Magnitude < 1.5 then
+        HorizontalVelocity = Vector3.zero
+    end
+
     local LeadOffset = HorizontalVelocity * LeadTime
 
     -- while they are in the air the vertical channel matters too, and it is
@@ -2478,31 +2333,6 @@ end
 -- for the murderer's torso before it leaves the client. you can be looking
 -- at the floor: the round still lands on the body.
 -- =====================================================================
-local NamecallHookInstalled = false
-local OriginalNamecall = nil
-
--- the position argument moves around between MM2 revisions, so instead of
--- trusting an index we replace whichever argument is a Vector3
-local function ReplaceHitArgument(Arguments, NewPosition)
-    for Index = 1, #Arguments do
-        if typeof(Arguments[Index]) == "Vector3" then
-            Arguments[Index] = NewPosition
-            return true
-        end
-        if typeof(Arguments[Index]) == "CFrame" then
-            Arguments[Index] = CFrame.new(NewPosition)
-            return true
-        end
-    end
-
-    -- some builds send a placeholder number in that slot instead
-    if #Arguments >= 2 and typeof(Arguments[2]) == "number" then
-        Arguments[2] = NewPosition
-        return true
-    end
-    return false
-end
-
 local function ResolveSilentAimPosition()
     local TargetPlayer, TargetPart, TargetRoot, TargetHumanoid = FindMurdererTarget()
     if not TargetPlayer or not TargetPart then
@@ -2522,89 +2352,17 @@ local function ResolveSilentAimPosition()
     return GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, TargetHumanoid, 1 / 60)
 end
 
-local function InstallSilentAim()
-    if NamecallHookInstalled then
-        return true
-    end
-
-    local GetNamecall = getnamecallmethod
-    local CallerCheck = checkcaller
-    if type(GetNamecall) ~= "function" then
-        return false -- executor cannot tell us which method was called
-    end
-
-    local function HandleNamecall(Object, ...)
-        local Method = GetNamecall()
-
-        if AimbotEnabled
-            and (Method == "InvokeServer" or Method == "FireServer")
-            and (type(CallerCheck) ~= "function" or not CallerCheck()) then
-
-            local RemoteName = nil
-            pcall(function()
-                RemoteName = Object.Name
-            end)
-
-            if RemoteName == "ShootGun" then
-                local HitPosition = ResolveSilentAimPosition()
-                if HitPosition then
-                    local Arguments = {...}
-                    if ReplaceHitArgument(Arguments, HitPosition) then
-                        return OriginalNamecall(Object, table.unpack(Arguments))
-                    end
-                end
-            end
-        end
-
-        return OriginalNamecall(Object, ...)
-    end
-
-    -- preferred path, present on every modern executor
-    if type(hookmetamethod) == "function" then
-        local Installed = pcall(function()
-            OriginalNamecall = hookmetamethod(game, "__namecall", HandleNamecall)
-        end)
-        if Installed and OriginalNamecall then
-            NamecallHookInstalled = true
-            return true
-        end
-    end
-
-    -- older path: edit the raw metatable by hand
-    if type(getrawmetatable) == "function" then
-        local Installed = pcall(function()
-            local GameMeta = getrawmetatable(game)
-            if type(setreadonly) == "function" then
-                setreadonly(GameMeta, false)
-            elseif type(make_writeable) == "function" then
-                make_writeable(GameMeta)
-            end
-
-            OriginalNamecall = GameMeta.__namecall
-            local Wrapped = function(Object, ...)
-                return HandleNamecall(Object, ...)
-            end
-            GameMeta.__namecall = (type(newcclosure) == "function") and newcclosure(Wrapped) or Wrapped
-
-            if type(setreadonly) == "function" then
-                setreadonly(GameMeta, true)
-            end
-        end)
-        if Installed and OriginalNamecall then
-            NamecallHookInstalled = true
-            return true
-        end
-    end
-
-    return false
+StopAimbot = function()
+    AimbotEnabled = false
+    RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
 end
 
--- fallback for executors with no metatable access at all: snap the camera
--- instantly, no smoothing. not as reliable as the hook, but on a client
--- that cannot hook it is the only thing left.
-local function RunCameraFallback()
+local function StartAimbot()
     RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
 
+    -- Camera priority + 1 is deliberate. bound any earlier and Roblox's own
+    -- camera script runs after us and overwrites the CFrame every frame,
+    -- which on its own is enough to make an aimbot look broken.
     RunService:BindToRenderStep(AIM_RENDER_STEP_NAME, Enum.RenderPriority.Camera.Value + 1, function()
         if not CoreIsAlive or not AimbotEnabled or not GunIsEquipped() then
             return
@@ -2615,44 +2373,26 @@ local function RunCameraFallback()
             return
         end
 
-        local HitPosition = ResolveSilentAimPosition()
-        if not HitPosition then
+        local AimPosition = ResolveSilentAimPosition()
+        if not AimPosition then
             return
         end
 
-        -- placed, never lerped: the residual from a lerp is exactly what
-        -- kept the old build a few degrees short of the body
-        ActiveCamera.CFrame = CFrame.new(ActiveCamera.CFrame.Position, HitPosition)
+        -- the camera is PLACED on the solution, never interpolated toward
+        -- it. every smoothed version of this leaves a residual error, and
+        -- that residual is exactly why the old build could stare at a
+        -- motionless target and still put the round past its shoulder.
+        ActiveCamera.CFrame = CFrame.new(ActiveCamera.CFrame.Position, AimPosition)
     end)
 end
 
-StopAimbot = function()
-    AimbotEnabled = false
-    RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
-    -- the hook itself stays installed and idles: it checks AimbotEnabled on
-    -- every call, and tearing a namecall hook down mid session is how you
-    -- break every other remote in the game
-end
-
-local function StartAimbot()
-    if InstallSilentAim() then
-        RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
-        if ShowNotification then
-            ShowNotification("SILENT AIM", "Hooked. Fire anywhere, the shot lands on the murderer.", Color3.fromRGB(64, 132, 255))
-        end
-        return
-    end
-
-    RunCameraFallback()
-    if ShowNotification then
-        ShowNotification("AIM", "No hook support, camera lock used instead.", Color3.fromRGB(235, 180, 110))
-    end
-end
-
-Setters.Aimbot = CreatePanelToggle(SheriffPanel, "SILENT AIM · NEVER MISS", 30, function(NewState)
+Setters.Aimbot = CreatePanelToggle(SheriffPanel, "PREDICTION AIMBOT", 30, function(NewState)
     AimbotEnabled = NewState
     if NewState then
         StartAimbot()
+        if ShowNotification then
+            ShowNotification("AIMBOT", "Turn Shift Lock on, the shot follows the camera.", Color3.fromRGB(64, 132, 255))
+        end
     else
         StopAimbot()
     end
@@ -2663,6 +2403,34 @@ Setters.AimWallCheck = CreatePanelToggle(SheriffPanel, "LEGIT · NO WALL AIM", 6
 end)
 
 Setters.AimWallCheck(true)
+
+-- THE PART EVERY AIMBOT GUIDE LEAVES OUT.
+-- MM2 fires along your camera only while the camera is locked to the
+-- character. without Shift Lock the phone build shoots wherever you last
+-- tapped, so the aim can be perfect and the round still goes elsewhere.
+-- Roblox menu, Settings, Shift Lock Switch, On. then the button appears
+-- on screen and you tap it once in the round.
+local AimHintLabel = Instance.new("TextLabel")
+AimHintLabel.Size = UDim2.new(1, -20, 0, 40)
+AimHintLabel.Position = UDim2.new(0, 10, 0, 148)
+AimHintLabel.BackgroundColor3 = Color3.fromRGB(30, 38, 52)
+AimHintLabel.Text = "MOBILE: turn Shift Lock on in Roblox settings, then tap the lock button in game. the gun follows the camera only while it is locked."
+AimHintLabel.TextColor3 = Color3.fromRGB(150, 190, 255)
+AimHintLabel.Font = Enum.Font.Code
+AimHintLabel.TextSize = 9
+AimHintLabel.TextWrapped = true
+AimHintLabel.TextXAlignment = Enum.TextXAlignment.Left
+AimHintLabel.TextYAlignment = Enum.TextYAlignment.Top
+AimHintLabel.ZIndex = 5
+AimHintLabel.Parent = SheriffPanel
+AddCorner(AimHintLabel, 6)
+AddStroke(AimHintLabel, Palette.Accent, 0.55)
+
+local AimHintPadding = Instance.new("UIPadding")
+AimHintPadding.PaddingLeft = UDim.new(0, 8)
+AimHintPadding.PaddingRight = UDim.new(0, 8)
+AimHintPadding.PaddingTop = UDim.new(0, 6)
+AimHintPadding.Parent = AimHintLabel
 
 -- AUTO EQUIP GUN.
 -- draws the revolver by itself the moment the murderer is genuinely in
@@ -3398,10 +3166,12 @@ UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
     "NEW    Trolling Float, the fly that never flew and turned",
     "       out to be far more fun as a hover toy",
-    "AIM    Silent Aim replaces the camera lock entirely. MM2",
-    "       never read the camera: the gun sends its own hit",
-    "       position to the server. that argument is swapped for",
-    "       the murderer's torso, so a shot cannot miss",
+    "AIM    Prediction aimbot, placed not interpolated. a lerp",
+    "       always leaves a residual and that residual was the",
+    "       miss. lead is round trip ping, and a target under",
+    "       walking pace now gets no lead at all",
+    "AIM    Needs Shift Lock on mobile, the panel says so",
+    "REMOVED Trolling Float, it did not belong here",
     "NEW    Auto Equip Knife In Range, draws the blade only when",
     "       somebody enters the kill aura radius",
     "EXTRA  Auto Grab Gun collects a drop from across the map",
@@ -5421,7 +5191,7 @@ CollectConfigSnapshot = function()
         GunEsp = GunEspEnabled,
         XRay = XRayEnabled,
         MyRoleHud = MyRoleHudEnabled,
-        TrollFloat = TrollFloatEnabled,
+
 
         WalkSpeed = DesiredWalkSpeed,
         JumpPower = DesiredJumpPower,
@@ -5476,7 +5246,7 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("GunEsp", Snapshot.GunEsp == true)
     ApplyToggleFromConfig("XRay", Snapshot.XRay == true)
     ApplyToggleFromConfig("MyRole", Snapshot.MyRoleHud == true)
-    ApplyToggleFromConfig("TrollFloat", Snapshot.TrollFloat == true)
+
 
     ApplyToggleFromConfig("Noclip", Snapshot.Noclip == true)
     ApplyToggleFromConfig("InfiniteJump", Snapshot.InfiniteJump == true)
@@ -5516,7 +5286,7 @@ local function ShutdownCore()
     AutoEscapeEnabled = false
     AutoEquipGunEnabled = false
     AutoEquipKnifeEnabled = false
-    TrollFloatEnabled = false
+
 
     StopNoclip()
     ClearGunEsp()
@@ -5526,7 +5296,7 @@ local function ShutdownCore()
     StopKillAura()
     StopAimbot()
     DisconnectMovementConnections()
-    if StopTrollFloat then StopTrollFloat() end
+
     if StopAutoEquipGun then StopAutoEquipGun() end
     if StopAutoEscapeLoop then StopAutoEscapeLoop() end
     if ApplyMyRoleHudState then ApplyMyRoleHudState(false) end
