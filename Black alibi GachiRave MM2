@@ -11,7 +11,7 @@
 local SCRIPT_BRAND_NAME = "Black Alibi MM2"
 local SCRIPT_VERSION_TAG = "1.0.3"
 local SCRIPT_AUTHOR_LINE = "by GachiRave"
-local SCRIPT_RELEASE_STATUS = "MAJOR RELEASE"
+local SCRIPT_RELEASE_STATUS = "FINAL · UNSUPPORTED"
 local TARGET_GAME_TITLE = "Murder Mystery 2"
 
 local WINDOW_WIDTH = 460
@@ -473,9 +473,10 @@ local PageExtra = CreatePage("PageExtra")
 local PageAuthor = CreatePage("PageAuthor")
 local PageSettings = CreatePage("PageSettings")
 
--- combat carries two full panels, it needs a taller canvas than the rest
+-- pages that outgrow the short window get their own canvas height
 PageCombat.CanvasSize = UDim2.fromOffset(0, 500)
 PagePlayer.CanvasSize = UDim2.fromOffset(0, 366)
+PageAuthor.CanvasSize = UDim2.fromOffset(0, 424)
 
 -- forward declarations for things pages hand to each other
 local LocateDroppedGun
@@ -1456,26 +1457,27 @@ end)
 end
 RunBuilder("Spin")
 
--- ---- fly ----
--- new in 1.0.3. built around the humanoid's own MoveDirection, which the
--- mobile joystick already fills in for us in world space, so the joystick
--- steers the flight with no extra input plumbing. a BodyVelocity carries
--- the body, PlatformStand keeps the walk animation from fighting it, and a
--- small draggable pad handles up and down.
-local FlyEnabled = false
-local StopFly
+-- ---- trolling: float ----
+-- this started life as a fly and never flew properly: MM2 fights any
+-- BodyVelocity on the root, so instead of clean flight you get a hovering,
+-- drifting body that skims over the map. it turned out to be far more fun
+-- than a real fly, so it ships as what it actually is, a troll toy.
+-- steering comes from Humanoid.MoveDirection, which the mobile joystick
+-- already fills in, and the pad handles up and down.
+local TrollFloatEnabled = false
+local StopTrollFloat
 
-Builders.Fly = function()
-local FLY_SPEED = 65
-local FlyConnection = nil
-local FlyVelocity = nil
-local FlyPad = nil
+Builders.TrollFloat = function()
+local FLOAT_SPEED = 65
+local FloatConnection = nil
+local FloatVelocity = nil
+local FloatPad = nil
 local VerticalDirection = 0
 
-local function TearDownFlyParts()
-    if FlyVelocity then
-        FlyVelocity:Destroy()
-        FlyVelocity = nil
+local function TearDownFloatParts()
+    if FloatVelocity then
+        FloatVelocity:Destroy()
+        FloatVelocity = nil
     end
 
     local Character = LocalPlayer.Character
@@ -1485,26 +1487,26 @@ local function TearDownFlyParts()
     end
 end
 
-StopFly = function()
-    if FlyConnection then
-        FlyConnection:Disconnect()
-        FlyConnection = nil
+StopTrollFloat = function()
+    if FloatConnection then
+        FloatConnection:Disconnect()
+        FloatConnection = nil
     end
     VerticalDirection = 0
-    TearDownFlyParts()
-    if FlyPad then
-        FlyPad.Visible = false
+    TearDownFloatParts()
+    if FloatPad then
+        FloatPad.Visible = false
     end
 end
 
--- up / down pad, only on screen while flying
-local function BuildFlyPad()
-    if FlyPad then
-        return FlyPad
+-- up / down pad, only on screen while floating
+local function BuildFloatPad()
+    if FloatPad then
+        return FloatPad
     end
 
     local Pad = Instance.new("Frame")
-    Pad.Name = "FlyPad"
+    Pad.Name = "TrollFloatPad"
     Pad.AnchorPoint = Vector2.new(1, 1)
     Pad.Position = UDim2.new(1, -22, 1, -210)
     Pad.Size = UDim2.fromOffset(56, 116)
@@ -1551,18 +1553,18 @@ local function BuildFlyPad()
     CreatePadButton("+", 6, 1)
     CreatePadButton("-", 62, -1)
 
-    FlyPad = Pad
+    FloatPad = Pad
     return Pad
 end
 
-local function StartFly()
-    if FlyConnection then
+local function StartTrollFloat()
+    if FloatConnection then
         return
     end
-    BuildFlyPad().Visible = true
+    BuildFloatPad().Visible = true
 
-    FlyConnection = RunService.Heartbeat:Connect(function()
-        if not CoreIsAlive or not FlyEnabled then
+    FloatConnection = RunService.Heartbeat:Connect(function()
+        if not CoreIsAlive or not TrollFloatEnabled then
             return
         end
 
@@ -1570,51 +1572,51 @@ local function StartFly()
         local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
         local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
         if not RootPart or not Humanoid or Humanoid.Health <= 0 then
-            TearDownFlyParts()
+            TearDownFloatParts()
             return
         end
 
         -- rebuild the mover if the body was replaced under us
-        if not FlyVelocity or FlyVelocity.Parent ~= RootPart then
-            if FlyVelocity then
-                FlyVelocity:Destroy()
+        if not FloatVelocity or FloatVelocity.Parent ~= RootPart then
+            if FloatVelocity then
+                FloatVelocity:Destroy()
             end
-            FlyVelocity = Instance.new("BodyVelocity")
-            FlyVelocity.Name = "BlackAlibiFly"
-            FlyVelocity.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-            FlyVelocity.P = 8000
-            FlyVelocity.Velocity = Vector3.zero
-            FlyVelocity.Parent = RootPart
+            FloatVelocity = Instance.new("BodyVelocity")
+            FloatVelocity.Name = "BlackAlibiFloat"
+            FloatVelocity.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+            FloatVelocity.P = 8000
+            FloatVelocity.Velocity = Vector3.zero
+            FloatVelocity.Parent = RootPart
         end
 
         Humanoid.PlatformStand = true
 
         -- MoveDirection is already world space and already fed by the
         -- joystick, the keyboard and the touch pad alike
-        local Horizontal = Humanoid.MoveDirection * FLY_SPEED
-        local Vertical = Vector3.new(0, VerticalDirection * FLY_SPEED, 0)
-        FlyVelocity.Velocity = Horizontal + Vertical
+        local Horizontal = Humanoid.MoveDirection * FLOAT_SPEED
+        local Vertical = Vector3.new(0, VerticalDirection * FLOAT_SPEED, 0)
+        FloatVelocity.Velocity = Horizontal + Vertical
     end)
 end
 
--- a respawn kills the mover, so rebuild it on the next frame
+-- a respawn kills the mover, so let the loop rebuild it next frame
 LocalPlayer.CharacterAdded:Connect(function()
-    if not FlyEnabled then
+    FloatVelocity = nil
+    if not TrollFloatEnabled then
         return
     end
-    FlyVelocity = nil
 end)
 
-Setters.Fly = CreateToggleRow(PagePlayer, "FLY", 280, function(NewState)
-    FlyEnabled = NewState
+Setters.TrollFloat = CreateToggleRow(PagePlayer, "TROLLING · FLOAT", 280, function(NewState)
+    TrollFloatEnabled = NewState
     if NewState then
-        StartFly()
+        StartTrollFloat()
     else
-        StopFly()
+        StopTrollFloat()
     end
 end)
 end
-RunBuilder("Fly")
+RunBuilder("TrollFloat")
 
 -- the camera rebuilds on respawn, so the chosen zoom gets stamped back on
 LocalPlayer.CharacterAdded:Connect(function()
@@ -1930,12 +1932,6 @@ end
 -- read only: whatever is already in your hands
 local function GetHeldKnife()
     return PickKnifeFrom(LocalPlayer.Character)
-end
-
--- the knife wherever it lives, hand or backpack
-local function FindAnyKnife()
-    return PickKnifeFrom(LocalPlayer.Character)
-        or PickKnifeFrom(LocalPlayer:FindFirstChildOfClass("Backpack"))
 end
 
 -- reparenting beats Humanoid:EquipTool, several mobile executors drop the
@@ -2373,7 +2369,6 @@ end
 local function RunKnifeThrow()
     local Character = LocalPlayer.Character
     local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-    local TouchFunction = firetouchinterest or (syn and syn.firetouchinterest)
 
     if not RootPart then
         if ShowNotification then
@@ -2768,8 +2763,10 @@ local function StartAutoEquipGun()
             return
         end
 
+        -- same reparent the knife uses: EquipTool is dropped silently by a
+        -- few mobile executors, the direct parent swap always lands
         pcall(function()
-            Humanoid:EquipTool(PackedGun)
+            PackedGun.Parent = Character
         end)
 
         if ShowNotification then
@@ -3505,7 +3502,7 @@ local UpdateTitle = Instance.new("TextLabel")
 UpdateTitle.Size = UDim2.new(1, -28, 0, 16)
 UpdateTitle.Position = UDim2.new(0, 14, 0, 178)
 UpdateTitle.BackgroundTransparency = 1
-UpdateTitle.Text = "1.0.3 · MAJOR RELEASE"
+UpdateTitle.Text = "1.0.3 · FINAL RELEASE"
 UpdateTitle.TextColor3 = Color3.fromRGB(111, 161, 255)
 UpdateTitle.Font = Enum.Font.Code
 UpdateTitle.TextSize = 11
@@ -3518,18 +3515,64 @@ UpdateNotes.Size = UDim2.new(1, -28, 0, 150)
 UpdateNotes.Position = UDim2.new(0, 14, 0, 198)
 UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
-    "NEW    Fly, joystick steered, with an up / down pad",
+    "NEW    Trolling Float, the fly that never flew and turned",
+    "       out to be far more fun as a hover toy",
     "NEW    Auto Shoot Murderer, fired through the gun remote",
     "NEW    Auto Equip Knife, a switch instead of forced pickup",
     "KNIFE  Throw rewritten: swing, tool remotes and a contact",
-    "       step onto the torso, then straight back to your spot",
+    "       step onto the torso, then back to your spot",
     "FIXED  Auto equip no longer steals an innocent's pickup",
     "FIXED  Grab Gun lands on the floor, never inside a wall",
-    "ESCAPE Trigger 16 to 35 studs, twelve routes tested and a",
-    "       ground check, so it never drops you through geometry",
+    "ESCAPE 35 stud trigger, twelve routes and a ground check",
     "REMOVED Role tracers, they showed nothing the chams did not",
     "UI     Window clamps on all four edges, softer transitions",
 }, string.char(10))
+
+-- ---- end of support ----
+local SupportNotice = Instance.new("Frame")
+SupportNotice.Size = UDim2.new(1, -28, 0, 54)
+SupportNotice.Position = UDim2.new(0, 14, 0, 356)
+SupportNotice.BackgroundColor3 = Color3.fromRGB(38, 26, 26)
+SupportNotice.BorderSizePixel = 0
+SupportNotice.ZIndex = 4
+SupportNotice.Parent = PageAuthor
+AddCorner(SupportNotice, 8)
+AddStroke(SupportNotice, Palette.Danger, 0.45)
+
+local SupportStripe = Instance.new("Frame")
+SupportStripe.Size = UDim2.fromOffset(3, 34)
+SupportStripe.Position = UDim2.new(0, 10, 0, 10)
+SupportStripe.BackgroundColor3 = Palette.Danger
+SupportStripe.BorderSizePixel = 0
+SupportStripe.ZIndex = 5
+SupportStripe.Parent = SupportNotice
+AddCorner(SupportStripe, 2)
+
+local SupportTitle = Instance.new("TextLabel")
+SupportTitle.Size = UDim2.new(1, -30, 0, 14)
+SupportTitle.Position = UDim2.new(0, 20, 0, 9)
+SupportTitle.BackgroundTransparency = 1
+SupportTitle.Text = "SUPPORT ENDED"
+SupportTitle.TextColor3 = Color3.fromRGB(255, 120, 120)
+SupportTitle.Font = Enum.Font.Code
+SupportTitle.TextSize = 11
+SupportTitle.TextXAlignment = Enum.TextXAlignment.Left
+SupportTitle.ZIndex = 5
+SupportTitle.Parent = SupportNotice
+
+local SupportBody = Instance.new("TextLabel")
+SupportBody.Size = UDim2.new(1, -30, 0, 28)
+SupportBody.Position = UDim2.new(0, 20, 0, 24)
+SupportBody.BackgroundTransparency = 1
+SupportBody.Text = "1.0.3 is the last build. Development on Black Alibi MM2 is officially discontinued, no further updates are planned."
+SupportBody.TextColor3 = Palette.TextDim
+SupportBody.Font = Enum.Font.Code
+SupportBody.TextSize = 10
+SupportBody.TextWrapped = true
+SupportBody.TextXAlignment = Enum.TextXAlignment.Left
+SupportBody.TextYAlignment = Enum.TextYAlignment.Top
+SupportBody.ZIndex = 5
+SupportBody.Parent = SupportNotice
 UpdateNotes.TextColor3 = Palette.TextDim
 UpdateNotes.Font = Enum.Font.Code
 UpdateNotes.TextSize = 10
@@ -5490,7 +5533,7 @@ CollectConfigSnapshot = function()
         GunEsp = GunEspEnabled,
         XRay = XRayEnabled,
         MyRoleHud = MyRoleHudEnabled,
-        Fly = FlyEnabled,
+        TrollFloat = TrollFloatEnabled,
         AutoShoot = AutoShootEnabled,
         AutoEquipKnife = AutoEquipKnifeEnabled,
         WalkSpeed = DesiredWalkSpeed,
@@ -5546,7 +5589,7 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("GunEsp", Snapshot.GunEsp == true)
     ApplyToggleFromConfig("XRay", Snapshot.XRay == true)
     ApplyToggleFromConfig("MyRole", Snapshot.MyRoleHud == true)
-    ApplyToggleFromConfig("Fly", Snapshot.Fly == true)
+    ApplyToggleFromConfig("TrollFloat", Snapshot.TrollFloat == true)
     ApplyToggleFromConfig("AutoShoot", Snapshot.AutoShoot == true)
     ApplyToggleFromConfig("AutoEquipKnife", Snapshot.AutoEquipKnife == true)
     ApplyToggleFromConfig("Noclip", Snapshot.Noclip == true)
@@ -5588,7 +5631,7 @@ local function ShutdownCore()
     AutoEquipGunEnabled = false
     AutoEquipKnifeEnabled = false
     AutoShootEnabled = false
-    FlyEnabled = false
+    TrollFloatEnabled = false
     KnifeThrowButtonEnabled = false
 
     StopNoclip()
@@ -5599,7 +5642,7 @@ local function ShutdownCore()
     StopKillAura()
     StopAimbot()
     DisconnectMovementConnections()
-    if StopFly then StopFly() end
+    if StopTrollFloat then StopTrollFloat() end
     if StopAutoShoot then StopAutoShoot() end
     if StopAutoEquipGun then StopAutoEquipGun() end
     if StopAutoEscapeLoop then StopAutoEscapeLoop() end
