@@ -1220,7 +1220,9 @@ local ClearAntiFlingConnections
 Builders.AntiFling = function()
 local AntiFlingConnection = nil
 local MAX_SAFE_ANGULAR = 45
-local MAX_SAFE_LINEAR = 260
+-- has to sit above the walk speed slider's ceiling of 250, otherwise the
+-- guard mistakes a legitimate sprint for a launch and keeps braking you
+local MAX_SAFE_LINEAR = 420
 local SafeCFrame = nil
 local NextSafePointTime = 0
 local PhasedParts = {}
@@ -1254,59 +1256,52 @@ end
 --
 -- your feet still collide with the map, so you walk normally, you just pass
 -- through other players like they are not there.
--- 1.0.3 final: collisions alone were never enough. a fling lands through
--- three different doors and the old build only shut one of them:
---   1. contact  - their limb hits yours and pushes
---   2. mass     - your parts carry weight, so the push has something to grab
---   3. ragdoll  - the humanoid trips into a physics state and spins away
--- all three are closed here. massless plus zero density is what actually
--- kills the momentum transfer, and that is the piece that was missing.
-local ZERO_PHYSICS = PhysicalProperties.new(0.01, 0, 0, 0, 0)
-
+-- THE SNAIL BUG.
+-- the previous attempt set Massless and a zero density PhysicalProperties on
+-- every limb. that is exactly what turned walking into a crawl: the humanoid
+-- drives the body through friction against the floor, and a weightless
+-- frictionless body has nothing to push off, so MoveDirection barely moves
+-- you. mass is left completely alone now.
+--
+-- passing through players never needed mass anyway. it needs two things:
+-- their limbs not colliding with you, and the humanoid refusing to ragdoll.
+-- both are cheap and neither touches how you walk.
 local function ApplyPhaseToCharacter(Character)
     if not Character then
         return
     end
 
     for _, Limb in ipairs(Character:GetChildren()) do
-        if Limb:IsA("BasePart") then
+        -- the root and the legs keep their collisions: that is the contact
+        -- the walk controller stands on. only the wide upper body, the part
+        -- a flinger actually rams into, gets switched off.
+        if Limb:IsA("BasePart")
+            and Limb.Name ~= "HumanoidRootPart"
+            and not string.find(string.lower(Limb.Name), "leg")
+            and not string.find(string.lower(Limb.Name), "foot") then
+
             if PhasedParts[Limb] == nil then
-                PhasedParts[Limb] = {
-                    CanCollide = Limb.CanCollide,
-                    Massless = Limb.Massless,
-                    CustomProperties = Limb.CustomPhysicalProperties,
-                }
+                PhasedParts[Limb] = Limb.CanCollide
             end
-
-            -- the root keeps colliding, that is what holds you off the floor
-            if Limb.Name ~= "HumanoidRootPart" then
-                Limb.CanCollide = false
-            end
-
-            -- weightless parts cannot be used as a lever
-            Limb.Massless = true
-            Limb.CustomPhysicalProperties = ZERO_PHYSICS
+            Limb.CanCollide = false
         end
     end
 
-    -- a fling that cannot ragdoll you is just a nudge
+    -- a fling that cannot ragdoll you is just a shove
     local Humanoid = Character:FindFirstChildOfClass("Humanoid")
     if Humanoid then
         pcall(function()
             Humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
             Humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-            Humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
         end)
     end
 end
 
 RestoreOwnCollisions = function()
-    for Limb, Original in pairs(PhasedParts) do
+    for Limb, OriginalCanCollide in pairs(PhasedParts) do
         if Limb and Limb.Parent then
             pcall(function()
-                Limb.CanCollide = Original.CanCollide
-                Limb.Massless = Original.Massless
-                Limb.CustomPhysicalProperties = Original.CustomProperties
+                Limb.CanCollide = OriginalCanCollide
             end)
         end
     end
@@ -1319,7 +1314,6 @@ RestoreOwnCollisions = function()
         pcall(function()
             Humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
             Humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
-            Humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
         end)
     end
 end
@@ -1405,10 +1399,10 @@ local function StartAntiFling()
             return
         end
 
-        -- re-arm only when the game has undone it. writing physical
-        -- properties to fifteen parts every frame is pure overhead, and
-        -- the root going heavy again is a reliable tell that it happened
-        if not RootPart.Massless then
+        -- re-arm only when the game has undone it, checked off one part
+        -- instead of rewriting the whole body every frame
+        local UpperTorso = Character:FindFirstChild("UpperTorso") or Character:FindFirstChild("Torso")
+        if UpperTorso and UpperTorso.CanCollide then
             ApplyPhaseToCharacter(Character)
         end
 
@@ -1683,7 +1677,7 @@ local StopAimbot
 local AimWallCheckEnabled = true
 local AutoEquipGunEnabled = false
 local StopAutoEquipGun
-local AutoEquipKnifeEnabled = false
+
 local AutoShootEnabled = false
 local StopAutoShoot
 local KnifeThrowButtonEnabled = false
@@ -1828,7 +1822,7 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
 end
 
 -- ---------- murderer panel ----------
-local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 250)
+local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 214)
 
 local RangeLabel = Instance.new("TextLabel")
 RangeLabel.Size = UDim2.new(1, -78, 0, 14)
@@ -2088,10 +2082,10 @@ local function StartKillAura()
 
         local Knife = GetHeldKnife()
 
-        -- auto equip is opt in now. no yielding here: hand the blade over and
-        -- let the next tick find it, a yield inside a Heartbeat connection is
-        -- how the aura used to re-enter itself
-        if not Knife and AutoEquipKnifeEnabled then
+        -- rides the single auto equip switch. no yielding here: hand the
+        -- blade over and let the next tick find it, a yield inside a
+        -- Heartbeat connection is how the aura used to re-enter itself
+        if not Knife and AutoEquipGunEnabled then
             local PackedKnife = PickKnifeFrom(LocalPlayer:FindFirstChildOfClass("Backpack"))
             if PackedKnife then
                 pcall(function()
@@ -2537,14 +2531,12 @@ Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 176,
     end
 end)
 
--- opt in, because the version that did this on its own also snatched
--- pickups out of an innocent's hands
-Setters.AutoEquipKnife = CreatePanelToggle(MurdererPanel, "AUTO EQUIP KNIFE", 212, function(NewState)
-    AutoEquipKnifeEnabled = NewState
-end)
+-- the murderer's own auto equip switch is gone: there is one auto equip in
+-- the whole menu now, AUTO EQUIP ON SIGHT on the sheriff panel, and it
+-- draws whichever weapon you are carrying the moment a target is in view.
 
 -- ---------- sheriff panel ----------
-local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 296, 180)
+local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 258, 180)
 
 -- the aim only runs with the revolver actually in hand
 local function GunIsEquipped()
@@ -2758,12 +2750,20 @@ StopAutoEquipGun = function()
     end
 end
 
-local function GunToolInBackpack()
+-- the one auto equip in the menu, so it has to cover both roles: the
+-- revolver for the sheriff and the blade for the murderer
+local function WeaponToolInBackpack()
     local Backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
     if not Backpack then
         return nil
     end
-    return Backpack:FindFirstChild("Gun") or Backpack:FindFirstChild("Revolver")
+    return Backpack:FindFirstChild("Gun")
+        or Backpack:FindFirstChild("Revolver")
+        or PickKnifeFrom(Backpack)
+end
+
+local function WeaponIsInHand()
+    return GunIsEquipped() or GetHeldKnife() ~= nil
 end
 
 local function StartAutoEquipGun()
@@ -2780,13 +2780,13 @@ local function StartAutoEquipGun()
         end
         NextEquipCheck = os.clock() + 0.2
 
-        if GunIsEquipped() then
+        if WeaponIsInHand() then
             return
         end
 
-        local PackedGun = GunToolInBackpack()
+        local PackedGun = WeaponToolInBackpack()
         if not PackedGun then
-            return -- not the sheriff, or the gun is already gone
+            return -- no weapon this round, nothing to draw
         end
 
         local Character = LocalPlayer.Character
@@ -2796,7 +2796,32 @@ local function StartAutoEquipGun()
             return
         end
 
+        -- a sheriff draws on the murderer, a murderer draws on the nearest
+        -- body: one switch, whichever side of the round you are on
         local _, TargetPart = FindMurdererTarget()
+
+        if not TargetPart and PickKnifeFrom(LocalPlayer:FindFirstChildOfClass("Backpack")) then
+            local ClosestDistance = nil
+            for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+                if OtherPlayer ~= LocalPlayer then
+                    local OtherCharacter = OtherPlayer.Character
+                    local OtherTorso = OtherCharacter and (
+                        OtherCharacter:FindFirstChild("UpperTorso")
+                        or OtherCharacter:FindFirstChild("Torso")
+                        or OtherCharacter:FindFirstChild("HumanoidRootPart")
+                    )
+                    local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
+                    if OtherTorso and OtherHumanoid and OtherHumanoid.Health > 0 then
+                        local Distance = (OtherTorso.Position - RootPart.Position).Magnitude
+                        if not ClosestDistance or Distance < ClosestDistance then
+                            ClosestDistance = Distance
+                            TargetPart = OtherTorso
+                        end
+                    end
+                end
+            end
+        end
+
         if not TargetPart then
             return
         end
@@ -2807,7 +2832,7 @@ local function StartAutoEquipGun()
             return
         end
         if not TargetIsVisible(EyePosition, TargetPart) then
-            return
+            return -- behind cover: drawing now would only give you away
         end
 
         -- same reparent the knife uses: EquipTool is dropped silently by a
@@ -2817,7 +2842,7 @@ local function StartAutoEquipGun()
         end)
 
         if ShowNotification then
-            ShowNotification("AUTO EQUIP", "Murderer in sight, revolver drawn.", Color3.fromRGB(64, 132, 255))
+            ShowNotification("AUTO EQUIP", "Target in sight, weapon drawn.", Color3.fromRGB(64, 132, 255))
         end
     end)
 end
@@ -3566,10 +3591,11 @@ UpdateNotes.Text = table.concat({
     "NEW    Auto Equip Knife, a switch instead of forced pickup",
     "KNIFE  Throw rewritten: swing, tool remotes and a contact",
     "       step onto the torso, then back to your spot",
-    "FIXED  Anti Fling: massless bodies, zero density and the",
-    "       ragdoll states off, not just a velocity clamp",
+    "FIXED  Anti Fling walked like a snail: zero density left the",
+    "       humanoid nothing to push off. mass untouched now,",
+    "       upper body phases, ragdoll states off",
     "FIXED  Auto equip no longer steals an innocent's pickup",
-    "REMOVED Auto Grab Gun, the sheriff on sight equip covers it",
+    "REMOVED Two extra auto equips. one switch, on sight, both roles",
     "ESCAPE 35 stud trigger, twelve routes and a ground check",
     "REMOVED Role tracers, they showed nothing the chams did not",
     "UI     Window clamps on all four edges, softer transitions",
@@ -5582,7 +5608,7 @@ CollectConfigSnapshot = function()
         MyRoleHud = MyRoleHudEnabled,
         TrollFloat = TrollFloatEnabled,
         AutoShoot = AutoShootEnabled,
-        AutoEquipKnife = AutoEquipKnifeEnabled,
+
         WalkSpeed = DesiredWalkSpeed,
         JumpPower = DesiredJumpPower,
         Noclip = NoclipEnabled,
@@ -5638,7 +5664,7 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("MyRole", Snapshot.MyRoleHud == true)
     ApplyToggleFromConfig("TrollFloat", Snapshot.TrollFloat == true)
     ApplyToggleFromConfig("AutoShoot", Snapshot.AutoShoot == true)
-    ApplyToggleFromConfig("AutoEquipKnife", Snapshot.AutoEquipKnife == true)
+
     ApplyToggleFromConfig("Noclip", Snapshot.Noclip == true)
     ApplyToggleFromConfig("InfiniteJump", Snapshot.InfiniteJump == true)
     ApplyToggleFromConfig("AntiFling", Snapshot.AntiFling == true)
@@ -5676,7 +5702,7 @@ local function ShutdownCore()
     MyRoleHudEnabled = false
     AutoEscapeEnabled = false
     AutoEquipGunEnabled = false
-    AutoEquipKnifeEnabled = false
+
     AutoShootEnabled = false
     TrollFloatEnabled = false
     KnifeThrowButtonEnabled = false
