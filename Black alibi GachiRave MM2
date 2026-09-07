@@ -109,84 +109,73 @@ end
 -- left there: a menu dragged into the top bezel used to be unreachable.
 local function MakeDraggable(TargetFrame)
     local Dragging = false
-    local PointerOrigin, FrameOrigin
+    local ActivePointer = nil
+    local PointerOffsetFromTopLeft = nil
+    local EDGE_PADDING = 4
 
-    -- THE JUMP.
-    -- the old version rebuilt Position from AbsolutePosition the moment you
-    -- touched the surface. absolute pixels and UDim2 offsets are not the
-    -- same origin once a scale component or the top inset is involved, so
-    -- the window snapped by that difference before it moved a single pixel.
-    -- nothing is converted now: the drag remembers the UDim2 it started on
-    -- and adds the pointer delta straight onto it, so the surface stays
-    -- exactly under your finger.
-    local StartPosition = nil
-    local StartTopLeft = nil
+    local function GetPointerPosition(Input)
+        return Vector2.new(Input.Position.X, Input.Position.Y)
+    end
 
-    local function ApplyDrag(Delta)
+    -- Position is written in absolute offsets while dragging. This avoids
+    -- mixing a 0.5 scale position with AbsolutePosition, which was the reason
+    -- the window jumped upward and stopped around the middle of the screen.
+    local function PlaceTopLeft(DesiredTopLeft)
         local ActiveCamera = workspace.CurrentCamera
         local ViewportSize = ActiveCamera and ActiveCamera.ViewportSize or Vector2.new(1280, 720)
         local FrameSize = TargetFrame.AbsoluteSize
+        local AnchorPoint = TargetFrame.AnchorPoint
 
-        -- clamp in pixel space, where the screen edges actually live
-        local MaxX = math.max(ViewportSize.X - FrameSize.X, 0)
-        local MaxY = math.max(ViewportSize.Y - FrameSize.Y, 0)
-        local ClampedX = math.clamp(StartTopLeft.X + Delta.X, 0, MaxX)
-        local ClampedY = math.clamp(StartTopLeft.Y + Delta.Y, 0, MaxY)
+        local MaximumX = math.max(ViewportSize.X - FrameSize.X - EDGE_PADDING, EDGE_PADDING)
+        local MaximumY = math.max(ViewportSize.Y - FrameSize.Y - EDGE_PADDING, EDGE_PADDING)
+        local ClampedX = math.clamp(DesiredTopLeft.X, EDGE_PADDING, MaximumX)
+        local ClampedY = math.clamp(DesiredTopLeft.Y, EDGE_PADDING, MaximumY)
 
-        -- feed back only how far it was allowed to travel, keeping whatever
-        -- scale the surface was built with intact
-        TargetFrame.Position = UDim2.new(
-            StartPosition.X.Scale, StartPosition.X.Offset + (ClampedX - StartTopLeft.X),
-            StartPosition.Y.Scale, StartPosition.Y.Offset + (ClampedY - StartTopLeft.Y)
+        -- Position points at the anchor, not at the top-left corner.
+        TargetFrame.Position = UDim2.fromOffset(
+            ClampedX + (FrameSize.X * AnchorPoint.X),
+            ClampedY + (FrameSize.Y * AnchorPoint.Y)
         )
     end
 
     TargetFrame.InputBegan:Connect(function(Input)
         if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
             Dragging = true
-            PointerOrigin = Input.Position
-            StartPosition = TargetFrame.Position
-            StartTopLeft = TargetFrame.AbsolutePosition
+            ActivePointer = Input
+            PointerOffsetFromTopLeft = GetPointerPosition(Input) - TargetFrame.AbsolutePosition
+
             Input.Changed:Connect(function()
                 if Input.UserInputState == Enum.UserInputState.End then
                     Dragging = false
+                    ActivePointer = nil
                 end
             end)
         end
     end)
 
     UserInputService.InputChanged:Connect(function(Input)
-        if not Dragging or not StartPosition then
+        if not Dragging or not PointerOffsetFromTopLeft then
             return
         end
-        if Input.UserInputType ~= Enum.UserInputType.MouseMovement and Input.UserInputType ~= Enum.UserInputType.Touch then
+
+        local IsMouseMovement = Input.UserInputType == Enum.UserInputType.MouseMovement
+        local IsActiveTouch = Input.UserInputType == Enum.UserInputType.Touch and Input == ActivePointer
+        if not IsMouseMovement and not IsActiveTouch then
             return
         end
-        ApplyDrag(Input.Position - PointerOrigin)
+
+        PlaceTopLeft(GetPointerPosition(Input) - PointerOffsetFromTopLeft)
     end)
 
-    -- rotating the phone shrinks the viewport. only nudge a surface that is
-    -- actually hanging off the edge, and never while a drag is in progress.
+    -- A phone rotation can shrink the viewport while a panel is parked near
+    -- an edge. Re-run the same four-sided clamp after the resize.
     local ActiveCamera = workspace.CurrentCamera
     if ActiveCamera then
         ActiveCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
             if Dragging or not TargetFrame.Parent then
                 return
             end
-
-            local ViewportSize = ActiveCamera.ViewportSize
-            local FrameSize = TargetFrame.AbsoluteSize
-            local TopLeft = TargetFrame.AbsolutePosition
-            local OverflowX = math.clamp(TopLeft.X, 0, math.max(ViewportSize.X - FrameSize.X, 0)) - TopLeft.X
-            local OverflowY = math.clamp(TopLeft.Y, 0, math.max(ViewportSize.Y - FrameSize.Y, 0)) - TopLeft.Y
-
-            if OverflowX ~= 0 or OverflowY ~= 0 then
-                local Current = TargetFrame.Position
-                TargetFrame.Position = UDim2.new(
-                    Current.X.Scale, Current.X.Offset + OverflowX,
-                    Current.Y.Scale, Current.Y.Offset + OverflowY
-                )
-            end
+            PlaceTopLeft(TargetFrame.AbsolutePosition)
         end)
     end
 end
@@ -3206,8 +3195,8 @@ UpdateNotes.Text = table.concat({
     "REMOVED Trolling Float, it did not belong here",
     "FLING  Phase wore off after a few passes, other bodies were",
     "       only done once on spawn. re-armed twice a second now",
-    "UI     Dragging no longer jumps: the window keeps its own",
-    "       UDim2 instead of being rebuilt from absolute pixels",
+    "UI     Dragging follows the exact grab point with no jump",
+    "UI     All four edges are hard limits: top, bottom and sides",
     "NEW    Auto Equip Knife In Range, draws the blade only when",
     "       somebody enters the kill aura radius",
     "EXTRA  Auto Grab Gun collects a drop from across the map",
@@ -5391,4 +5380,4 @@ task.spawn(function()
     end
 end)
 
--- by GachiRave · 1.0.2 · stable release`
+-- by GachiRave · 1.0.2 · stable release
