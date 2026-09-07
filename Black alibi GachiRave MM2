@@ -1254,32 +1254,74 @@ end
 --
 -- your feet still collide with the map, so you walk normally, you just pass
 -- through other players like they are not there.
+-- 1.0.3 final: collisions alone were never enough. a fling lands through
+-- three different doors and the old build only shut one of them:
+--   1. contact  - their limb hits yours and pushes
+--   2. mass     - your parts carry weight, so the push has something to grab
+--   3. ragdoll  - the humanoid trips into a physics state and spins away
+-- all three are closed here. massless plus zero density is what actually
+-- kills the momentum transfer, and that is the piece that was missing.
+local ZERO_PHYSICS = PhysicalProperties.new(0.01, 0, 0, 0, 0)
+
 local function ApplyPhaseToCharacter(Character)
     if not Character then
         return
     end
+
     for _, Limb in ipairs(Character:GetChildren()) do
-        -- the root already ignores collisions, the limbs are the problem
-        if Limb:IsA("BasePart") and Limb.Name ~= "HumanoidRootPart" then
+        if Limb:IsA("BasePart") then
             if PhasedParts[Limb] == nil then
-                PhasedParts[Limb] = Limb.CanCollide
+                PhasedParts[Limb] = {
+                    CanCollide = Limb.CanCollide,
+                    Massless = Limb.Massless,
+                    CustomProperties = Limb.CustomPhysicalProperties,
+                }
             end
-            -- CanCollide off on your own limbs keeps you standing on the
-            -- floor through the root and the humanoid's hip height
-            Limb.CanCollide = false
+
+            -- the root keeps colliding, that is what holds you off the floor
+            if Limb.Name ~= "HumanoidRootPart" then
+                Limb.CanCollide = false
+            end
+
+            -- weightless parts cannot be used as a lever
+            Limb.Massless = true
+            Limb.CustomPhysicalProperties = ZERO_PHYSICS
         end
+    end
+
+    -- a fling that cannot ragdoll you is just a nudge
+    local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    if Humanoid then
+        pcall(function()
+            Humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+            Humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+            Humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
+        end)
     end
 end
 
 RestoreOwnCollisions = function()
-    for Limb, OriginalCanCollide in pairs(PhasedParts) do
+    for Limb, Original in pairs(PhasedParts) do
         if Limb and Limb.Parent then
             pcall(function()
-                Limb.CanCollide = OriginalCanCollide
+                Limb.CanCollide = Original.CanCollide
+                Limb.Massless = Original.Massless
+                Limb.CustomPhysicalProperties = Original.CustomProperties
             end)
         end
     end
     table.clear(PhasedParts)
+
+    -- hand the physics states back to the game
+    local Character = LocalPlayer.Character
+    local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+    if Humanoid then
+        pcall(function()
+            Humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+            Humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+            Humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
+        end)
+    end
 end
 
 local function StartAntiFling()
@@ -1363,8 +1405,12 @@ local function StartAntiFling()
             return
         end
 
-        -- your own body is cheap to keep in check, it is one character
-        ApplyPhaseToCharacter(Character)
+        -- re-arm only when the game has undone it. writing physical
+        -- properties to fifteen parts every frame is pure overhead, and
+        -- the root going heavy again is a reliable tell that it happened
+        if not RootPart.Massless then
+            ApplyPhaseToCharacter(Character)
+        end
 
         local LinearVelocity = RootPart.AssemblyLinearVelocity
         local AngularVelocity = RootPart.AssemblyAngularVelocity
@@ -1376,6 +1422,7 @@ local function StartAntiFling()
             -- on the last spot it was standing on calmly
             RootPart.AssemblyAngularVelocity = Vector3.zero
             RootPart.AssemblyLinearVelocity = Vector3.new(0, math.min(LinearVelocity.Y, 0), 0)
+            Humanoid.PlatformStand = false -- a fling likes to leave this on
 
             if SafeCFrame then
                 pcall(function()
@@ -2917,13 +2964,11 @@ ExtraTitle.TextXAlignment = Enum.TextXAlignment.Left
 ExtraTitle.ZIndex = 4
 ExtraTitle.Parent = PageExtra
 
--- grabs the revolver off the ground and puts you back where you stood
-Setters.AutoGrabGun = CreateToggleRow(PageExtra, "AUTO GRAB GUN", 40, function(NewState)
-    AutoGrabGunEnabled = NewState
-    if NewState and TryAutoGrabGun then
-        TryAutoGrabGun()
-    end
-end)
+-- AUTO GRAB GUN was removed in the final build. two switches were racing
+-- to hand you the revolver: this one teleported you onto the drop, and the
+-- sheriff panel's AUTO EQUIP ON SIGHT drew it when the murderer appeared.
+-- one is enough, and the on sight version is the one that wins fights.
+-- the manual GRAB GUN button on the Teleport tab is still there.
 
 -- AUTO ESCAPE.
 -- the killer gets inside sixteen studs and you get thrown clear of him.
@@ -3100,7 +3145,7 @@ local function StartAutoEscapeLoop()
     end)
 end
 
-Setters.AutoEscape = CreateToggleRow(PageExtra, "AUTO ESCAPE", 78, function(NewState)
+Setters.AutoEscape = CreateToggleRow(PageExtra, "AUTO ESCAPE", 40, function(NewState)
     AutoEscapeEnabled = NewState
     if NewState then
         StartAutoEscapeLoop()
@@ -3113,9 +3158,9 @@ RunBuilder("AutoEscape")
 
 local ExtraBody = Instance.new("TextLabel")
 ExtraBody.Size = UDim2.new(1, -28, 0, 70)
-ExtraBody.Position = UDim2.new(0, 14, 0, 118)
+ExtraBody.Position = UDim2.new(0, 14, 0, 84)
 ExtraBody.BackgroundTransparency = 1
-ExtraBody.Text = "Auto Grab Gun picks the revolver off the floor and returns you to your spot. Auto Escape watches the killer and throws you clear the moment he closes in, checking the floor ahead so you never land inside a wall."
+ExtraBody.Text = "Auto Escape watches the killer and throws you clear the moment he closes in. It tests twelve routes and checks for solid ground first, so it never drops you inside a wall. Picking the revolver up lives on the Sheriff panel now."
 ExtraBody.TextColor3 = Palette.TextFaint
 ExtraBody.Font = Enum.Font.Code
 ExtraBody.TextSize = 10
@@ -3521,8 +3566,10 @@ UpdateNotes.Text = table.concat({
     "NEW    Auto Equip Knife, a switch instead of forced pickup",
     "KNIFE  Throw rewritten: swing, tool remotes and a contact",
     "       step onto the torso, then back to your spot",
+    "FIXED  Anti Fling: massless bodies, zero density and the",
+    "       ragdoll states off, not just a velocity clamp",
     "FIXED  Auto equip no longer steals an innocent's pickup",
-    "FIXED  Grab Gun lands on the floor, never inside a wall",
+    "REMOVED Auto Grab Gun, the sheriff on sight equip covers it",
     "ESCAPE 35 stud trigger, twelve routes and a ground check",
     "REMOVED Role tracers, they showed nothing the chams did not",
     "UI     Window clamps on all four edges, softer transitions",
@@ -5549,7 +5596,7 @@ CollectConfigSnapshot = function()
         AimWallCheck = AimWallCheckEnabled,
         AutoEquipGun = AutoEquipGunEnabled,
         KnifeThrowButton = KnifeThrowButtonEnabled,
-        AutoGrabGun = AutoGrabGunEnabled,
+
         AutoEscape = AutoEscapeEnabled,
         FieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or DEFAULT_FIELD_OF_VIEW,
     }
@@ -5602,7 +5649,7 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("AimWallCheck", Snapshot.AimWallCheck ~= false)
     ApplyToggleFromConfig("AutoEquipGun", Snapshot.AutoEquipGun == true)
     ApplyToggleFromConfig("KnifeThrow", Snapshot.KnifeThrowButton == true)
-    ApplyToggleFromConfig("AutoGrabGun", Snapshot.AutoGrabGun == true)
+
     ApplyToggleFromConfig("AutoEscape", Snapshot.AutoEscape == true)
 end
 
