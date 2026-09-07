@@ -474,7 +474,7 @@ local PageAuthor = CreatePage("PageAuthor")
 local PageSettings = CreatePage("PageSettings")
 
 -- pages that outgrow the short window get their own canvas height
-PageCombat.CanvasSize = UDim2.fromOffset(0, 500)
+PageCombat.CanvasSize = UDim2.fromOffset(0, 400)
 PagePlayer.CanvasSize = UDim2.fromOffset(0, 366)
 PageAuthor.CanvasSize = UDim2.fromOffset(0, 424)
 
@@ -1678,10 +1678,7 @@ local AimWallCheckEnabled = true
 local AutoEquipGunEnabled = false
 local StopAutoEquipGun
 
-local AutoShootEnabled = false
-local StopAutoShoot
-local KnifeThrowButtonEnabled = false
-local HideKnifeThrowFab
+
 
 local KillAuraRange = 12
 local SetKillAuraRange
@@ -1822,7 +1819,7 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
 end
 
 -- ---------- murderer panel ----------
-local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 214)
+local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 182)
 
 local RangeLabel = Instance.new("TextLabel")
 RangeLabel.Size = UDim2.new(1, -78, 0, 14)
@@ -2292,237 +2289,23 @@ end)
 
 KillAllButton.Activated:Connect(RunKillAll)
 
--- ---------- knife throw ----------
--- reworked end to end. the old version could happily "touch" with a knife
--- that was still sitting in the backpack, which never registers a kill.
--- now the knife is equipped first, you pivot to face the target, and the
--- touch lands on the torso (UpperTorso / Torso), not the head.
--- KNIFE KILL, THREE WAYS.
--- 1.0.3 stops relying on a single trick. MM2 blades carry their own remote
--- (the same one the game fires when you swing), so we look inside the tool
--- and use it when it is there, then fall through to the swing plus touch
--- pair that the classic kill scripts use. whichever the server accepts, the
--- kill lands, and nothing throws if one of them is missing.
-local function FireKnifeRemotes(Knife, TargetCharacter, TargetPart)
-    local FiredAnything = false
+-- ---------- knife throw: removed ----------
+-- it was never a throw. MM2 throws the blade from inside the tool's own
+-- LocalScript, and that script owns the aim, the charge and the projectile.
+-- reproducing it means firing the exact remote that script fires, with the
+-- exact arguments, and that structure is not something I can read from the
+-- outside or find documented anywhere. what shipped instead was a teleport
+-- next to the target, a stab, and a teleport back, dressed up as a throw.
+--
+-- so it is gone rather than lying about what it does. Kill Aura already
+-- covers close range with the same swing plus touch, and it does it without
+-- yanking your character across the map.
 
-    for _, Item in ipairs(Knife:GetDescendants()) do
-        if Item:IsA("RemoteEvent") then
-            pcall(function()
-                Item:FireServer("Slash")
-            end)
-            pcall(function()
-                Item:FireServer(TargetCharacter, TargetPart.Position)
-            end)
-            FiredAnything = true
-        elseif Item:IsA("RemoteFunction") then
-            pcall(function()
-                Item:InvokeServer("Slash")
-            end)
-            FiredAnything = true
-        end
-    end
-
-    return FiredAnything
-end
-
-local function DeliverKnifeHit(Knife, TargetCharacter, TargetPart)
-    local Handle = Knife and Knife:FindFirstChild("Handle")
-    if not Handle or not TargetPart then
-        return false
-    end
-
-    -- the blade only counts while it is mid swing, so the swing goes first
-    pcall(function()
-        Knife:Activate()
-    end)
-
-    FireKnifeRemotes(Knife, TargetCharacter, TargetPart)
-
-    local TouchFunction = firetouchinterest or (syn and syn.firetouchinterest)
-    if TouchFunction then
-        pcall(function()
-            TouchFunction(TargetPart, Handle, 0)
-        end)
-        RunService.Heartbeat:Wait()
-        pcall(function()
-            TouchFunction(TargetPart, Handle, 1)
-        end)
-    end
-
-    return true
-end
-
-local function GetBodyAimPart(TargetCharacter)
-    return TargetCharacter:FindFirstChild("UpperTorso")
-        or TargetCharacter:FindFirstChild("Torso")
-        or TargetCharacter:FindFirstChild("HumanoidRootPart")
-end
-
-local function FindKnifeThrowTarget(RootPart)
-    local KNIFE_THROW_MAX_RANGE = 65
-
-    local BestSheriffPlayer, BestSheriffTorso, BestSheriffDistance
-    local BestAnyPlayer, BestAnyTorso, BestAnyDistance
-
-    for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
-        if OtherPlayer ~= LocalPlayer then
-            local OtherCharacter = OtherPlayer.Character
-            local OtherTorso = OtherCharacter and GetBodyAimPart(OtherCharacter)
-            local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
-
-            if OtherTorso and OtherHumanoid and OtherHumanoid.Health > 0 then
-                local Distance = (OtherTorso.Position - RootPart.Position).Magnitude
-                if Distance <= KNIFE_THROW_MAX_RANGE and TargetIsVisible(RootPart.Position, OtherTorso) then
-                    local RoleKey = GetRoleOfPlayer and GetRoleOfPlayer(OtherPlayer)
-
-                    if RoleKey == "Sheriff" and (not BestSheriffDistance or Distance < BestSheriffDistance) then
-                        BestSheriffPlayer, BestSheriffTorso, BestSheriffDistance = OtherPlayer, OtherTorso, Distance
-                    end
-                    if not BestAnyDistance or Distance < BestAnyDistance then
-                        BestAnyPlayer, BestAnyTorso, BestAnyDistance = OtherPlayer, OtherTorso, Distance
-                    end
-                end
-            end
-        end
-    end
-
-    -- the sheriff always wins the pick when one is out in the open
-    if BestSheriffTorso then
-        return BestSheriffPlayer, BestSheriffTorso
-    end
-    return BestAnyPlayer, BestAnyTorso
-end
-
-local function RunKnifeThrow()
-    local Character = LocalPlayer.Character
-    local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-
-    if not RootPart then
-        if ShowNotification then
-            ShowNotification("KNIFE THROW", "No character loaded.", Color3.fromRGB(255, 72, 72))
-        end
-        return
-    end
-
-    task.spawn(function()
-        local Knife = EquipKnifeNow()
-        if not Knife or not Knife:FindFirstChild("Handle") then
-            if ShowNotification then
-                ShowNotification("KNIFE THROW", "No knife this round.", Color3.fromRGB(255, 72, 72))
-            end
-            return
-        end
-
-        local TargetPlayer, TargetTorso = FindKnifeThrowTarget(RootPart)
-        if not TargetPlayer or not TargetTorso then
-            if ShowNotification then
-                ShowNotification("KNIFE THROW", "No clear target in range.", Color3.fromRGB(235, 180, 110))
-            end
-            return
-        end
-
-        -- 1.0.3: step onto them instead of praying the reach is enough.
-        -- a touch only registers when the handle really overlaps the body,
-        -- and standing off at range is why the old button "did nothing".
-        -- we hop in, hit the torso, and drop straight back where we stood.
-        local ReturnPivot = LocalPlayer.Character and LocalPlayer.Character:GetPivot()
-        local Character = LocalPlayer.Character
-
-        pcall(function()
-            Character:PivotTo(CFrame.new(
-                TargetTorso.Position - (TargetTorso.CFrame.LookVector * 2.2),
-                TargetTorso.Position
-            ))
-            RootPart.AssemblyLinearVelocity = Vector3.zero
-        end)
-
-        RunService.Heartbeat:Wait()
-        DeliverKnifeHit(Knife, TargetPlayer.Character, TargetTorso)
-        RunService.Heartbeat:Wait()
-
-        if Character and Character.Parent and ReturnPivot then
-            pcall(function()
-                Character:PivotTo(ReturnPivot)
-                RootPart.AssemblyLinearVelocity = Vector3.zero
-                RootPart.AssemblyAngularVelocity = Vector3.zero
-            end)
-        end
-
-        if ShowNotification then
-            ShowNotification("KNIFE THROW", "Hit " .. TargetPlayer.Name .. " · torso.", Color3.fromRGB(255, 120, 120))
-        end
-    end)
-end
-
-local KnifeThrowFab = nil
-
-local function CreateKnifeThrowFab()
-    if KnifeThrowFab then
-        return KnifeThrowFab
-    end
-
-    local Fab = Instance.new("TextButton")
-    Fab.Name = "KnifeThrowFab"
-    Fab.AnchorPoint = Vector2.new(1, 1)
-    Fab.Size = UDim2.fromOffset(58, 58)
-    Fab.Position = UDim2.new(1, -22, 1, -140)
-    Fab.BackgroundColor3 = Color3.fromRGB(48, 26, 28)
-    Fab.Text = "THROW"
-    Fab.TextColor3 = Color3.fromRGB(255, 120, 120)
-    Fab.Font = Enum.Font.Code
-    Fab.TextSize = 11
-    Fab.AutoButtonColor = false
-    Fab.Active = true
-    Fab.Visible = false
-    Fab.ZIndex = 40
-    Fab.Parent = RootGui
-    AddCorner(Fab, 29)
-    AddStroke(Fab, Color3.fromRGB(255, 72, 72), 0.3)
-    MakeDraggable(Fab)
-
-    local FabScale = Instance.new("UIScale")
-    FabScale.Parent = Fab
-
-    Fab.InputBegan:Connect(function(Input)
-        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
-            Animate(FabScale, TweenFast, {Scale = 0.88})
-        end
-    end)
-    Fab.InputEnded:Connect(function(Input)
-        if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
-            Animate(FabScale, TweenFast, {Scale = 1})
-        end
-    end)
-
-    Fab.Activated:Connect(RunKnifeThrow)
-
-    KnifeThrowFab = Fab
-    return Fab
-end
-
-HideKnifeThrowFab = function()
-    KnifeThrowButtonEnabled = false
-    if KnifeThrowFab then
-        KnifeThrowFab.Visible = false
-    end
-end
-
-Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 176, function(NewState)
-    KnifeThrowButtonEnabled = NewState
-    if NewState then
-        local Fab = CreateKnifeThrowFab()
-        Fab.Visible = true
-    elseif KnifeThrowFab then
-        KnifeThrowFab.Visible = false
-    end
-end)
-
--- The automatic knife equip was removed. The only automatic equip in Combat
--- belongs to the sheriff and only draws an owned revolver on direct sight.
+-- The automatic knife equip was removed too. The only automatic equip left
+-- in Combat belongs to the sheriff and only draws an owned revolver.
 
 -- ---------- sheriff panel ----------
-local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 258, 180)
+local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 228, 146)
 
 -- the aim only runs with the revolver actually in hand
 local function GunIsEquipped()
@@ -2765,9 +2548,26 @@ local function StartAutoEquipGun()
             return
         end
 
+        -- ROLE GATE.
+        -- the old check only asked "is there a gun in the backpack", and a
+        -- murderer who finished the sheriff and walked over the drop passed
+        -- it perfectly: the revolver jumped into his hands and announced him
+        -- to the whole lobby. this switch belongs to the sheriff, so it now
+        -- refuses to run for anyone else.
+        local MyRole = GetRoleOfPlayer and GetRoleOfPlayer(LocalPlayer)
+        if MyRole ~= "Sheriff" and MyRole ~= "Hero" then
+            return
+        end
+
+        -- a blade in hand means the role table is stale and you are really
+        -- the murderer. never draw a gun on top of a knife.
+        if GetHeldKnife() then
+            return
+        end
+
         local PackedGun = GunToolInBackpack()
         if not PackedGun then
-            return -- not the sheriff, or the gun is no longer owned
+            return -- no revolver owned right now, nothing to draw
         end
 
         local Character = LocalPlayer.Character
@@ -2812,118 +2612,10 @@ Setters.AutoEquipGun = CreatePanelToggle(SheriffPanel, "AUTO EQUIP GUN ON SIGHT"
     end
 end)
 
--- AUTO SHOOT MURDERER.
--- MM2 resolves a shot on the client and hands the server a hit position
--- through the gun's own remote, so a clean kill does not need the camera
--- pointed anywhere. this finds that remote inside the tool and fires it at
--- the murderer's torso, but only while they are genuinely in the open.
-local AutoShootConnection = nil
-local NextShotTime = 0
-
-local function FindGunShootRemote(GunTool)
-    local FallbackRemote = nil
-    for _, Item in ipairs(GunTool:GetDescendants()) do
-        if Item:IsA("RemoteFunction") or Item:IsA("RemoteEvent") then
-            local LowerName = string.lower(Item.Name)
-            -- the classic path is Gun.KnifeLocal.CreateBeam.RemoteFunction
-            if LowerName == "shootgun" or LowerName == "remotefunction" then
-                return Item
-            end
-            FallbackRemote = FallbackRemote or Item
-        end
-    end
-    return FallbackRemote
-end
-
-local function FireGunAt(GunTool, HitPosition)
-    local Remote = FindGunShootRemote(GunTool)
-    if not Remote then
-        return false
-    end
-
-    local Delivered = false
-    if Remote:IsA("RemoteFunction") then
-        -- the signature MM2 has used for years, with a plain fallback
-        Delivered = pcall(function()
-            Remote:InvokeServer(1, HitPosition, "AH2")
-        end)
-        if not Delivered then
-            Delivered = pcall(function()
-                Remote:InvokeServer(HitPosition)
-            end)
-        end
-    else
-        Delivered = pcall(function()
-            Remote:FireServer(1, HitPosition, "AH2")
-        end)
-        if not Delivered then
-            Delivered = pcall(function()
-                Remote:FireServer(HitPosition)
-            end)
-        end
-    end
-    return Delivered
-end
-
-StopAutoShoot = function()
-    if AutoShootConnection then
-        AutoShootConnection:Disconnect()
-        AutoShootConnection = nil
-    end
-end
-
-local function StartAutoShoot()
-    if AutoShootConnection then
-        return
-    end
-
-    AutoShootConnection = RunService.Heartbeat:Connect(function()
-        if not CoreIsAlive or not AutoShootEnabled then
-            return
-        end
-        if os.clock() < NextShotTime then
-            return
-        end
-
-        local Character = LocalPlayer.Character
-        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
-        if not RootPart then
-            return
-        end
-
-        local GunTool = Character:FindFirstChild("Gun") or Character:FindFirstChild("Revolver")
-        if not GunTool or not GunTool:IsA("Tool") then
-            return -- the revolver has to be in your hands
-        end
-
-        local _, TargetPart = FindMurdererTarget()
-        if not TargetPart then
-            return
-        end
-
-        local EyePosition = RootPart.Position + Vector3.new(0, 1.5, 0)
-        if (TargetPart.Position - RootPart.Position).Magnitude > 300 then
-            return
-        end
-        if not TargetIsVisible(EyePosition, TargetPart) then
-            return -- never fire into a wall, that is a wasted round
-        end
-
-        NextShotTime = os.clock() + 0.65
-        if FireGunAt(GunTool, TargetPart.Position) and ShowNotification then
-            ShowNotification("AUTO SHOOT", "Shot fired at the murderer.", Color3.fromRGB(64, 132, 255))
-        end
-    end)
-end
-
-Setters.AutoShoot = CreatePanelToggle(SheriffPanel, "AUTO SHOOT MURDERER", 144, function(NewState)
-    AutoShootEnabled = NewState
-    if NewState then
-        StartAutoShoot()
-    else
-        StopAutoShoot()
-    end
-end)
+-- AUTO SHOOT MURDERER was removed in the final build. it duplicated the
+-- switch above it: both watched the murderer through the same line of sight
+-- test, and the sheriff panel only needs one automatic action. drawing the
+-- revolver is the useful half, pulling the trigger for you is not.
 
 end
 RunBuilder("Combat")
@@ -3547,18 +3239,17 @@ UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
     "NEW    Trolling Float, the fly that never flew and turned",
     "       out to be far more fun as a hover toy",
-    "NEW    Auto Shoot Murderer, fired through the gun remote",
-    "NEW    Auto Equip Knife, a switch instead of forced pickup",
-    "KNIFE  Throw rewritten: swing, tool remotes and a contact",
-    "       step onto the torso, then back to your spot",
+    "EXTRA  Auto Grab Gun collects a drop from across the map",
+    "SHERIFF One automatic action left: draw the revolver when",
+    "       the murderer is genuinely in sight",
+    "SHERIFF It checks your role first, so a murderer standing",
+    "       over the dead sheriff never pulls the gun out",
+    "REMOVED Auto Shoot, it duplicated the equip switch",
+    "REMOVED Knife Throw, it teleported and faked the throw",
     "FIXED  Anti Fling walked like a snail: zero density left the",
     "       humanoid nothing to push off. mass untouched now,",
     "       upper body phases, ragdoll states off",
-    "FIXED  Sheriff auto equip only draws an owned revolver",
-    "EXTRA  Auto Grab Gun restored for map-wide gun pickup",
-    "COMBAT One gun equip switch, only when murderer is visible",
     "ESCAPE 35 stud trigger, twelve routes and a ground check",
-    "REMOVED Role tracers, they showed nothing the chams did not",
     "UI     Window clamps on all four edges, softer transitions",
 }, string.char(10))
 
@@ -5568,7 +5259,6 @@ CollectConfigSnapshot = function()
         XRay = XRayEnabled,
         MyRoleHud = MyRoleHudEnabled,
         TrollFloat = TrollFloatEnabled,
-        AutoShoot = AutoShootEnabled,
 
         WalkSpeed = DesiredWalkSpeed,
         JumpPower = DesiredJumpPower,
@@ -5582,7 +5272,6 @@ CollectConfigSnapshot = function()
         PredictionAimbot = AimbotEnabled,
         AimWallCheck = AimWallCheckEnabled,
         AutoEquipGun = AutoEquipGunEnabled,
-        KnifeThrowButton = KnifeThrowButtonEnabled,
         AutoGrabGun = AutoGrabGunEnabled,
         AutoEscape = AutoEscapeEnabled,
         FieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or DEFAULT_FIELD_OF_VIEW,
@@ -5624,7 +5313,6 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("XRay", Snapshot.XRay == true)
     ApplyToggleFromConfig("MyRole", Snapshot.MyRoleHud == true)
     ApplyToggleFromConfig("TrollFloat", Snapshot.TrollFloat == true)
-    ApplyToggleFromConfig("AutoShoot", Snapshot.AutoShoot == true)
 
     ApplyToggleFromConfig("Noclip", Snapshot.Noclip == true)
     ApplyToggleFromConfig("InfiniteJump", Snapshot.InfiniteJump == true)
@@ -5635,7 +5323,6 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("Aimbot", Snapshot.PredictionAimbot == true or Snapshot.Aimbot == true)
     ApplyToggleFromConfig("AimWallCheck", Snapshot.AimWallCheck ~= false)
     ApplyToggleFromConfig("AutoEquipGun", Snapshot.AutoEquipGun == true)
-    ApplyToggleFromConfig("KnifeThrow", Snapshot.KnifeThrowButton == true)
     ApplyToggleFromConfig("AutoGrabGun", Snapshot.AutoGrabGun == true)
     ApplyToggleFromConfig("AutoEscape", Snapshot.AutoEscape == true)
 end
@@ -5663,10 +5350,7 @@ local function ShutdownCore()
     MyRoleHudEnabled = false
     AutoEscapeEnabled = false
     AutoEquipGunEnabled = false
-
-    AutoShootEnabled = false
     TrollFloatEnabled = false
-    KnifeThrowButtonEnabled = false
 
     StopNoclip()
     ClearGunEsp()
@@ -5677,11 +5361,9 @@ local function ShutdownCore()
     StopAimbot()
     DisconnectMovementConnections()
     if StopTrollFloat then StopTrollFloat() end
-    if StopAutoShoot then StopAutoShoot() end
     if StopAutoEquipGun then StopAutoEquipGun() end
     if StopAutoEscapeLoop then StopAutoEscapeLoop() end
     if ApplyMyRoleHudState then ApplyMyRoleHudState(false) end
-    if HideKnifeThrowFab then HideKnifeThrowFab() end
 
     if workspace.CurrentCamera then
         workspace.CurrentCamera.FieldOfView = DEFAULT_FIELD_OF_VIEW
