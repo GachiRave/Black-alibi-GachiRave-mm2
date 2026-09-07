@@ -2082,19 +2082,6 @@ local function StartKillAura()
 
         local Knife = GetHeldKnife()
 
-        -- rides the single auto equip switch. no yielding here: hand the
-        -- blade over and let the next tick find it, a yield inside a
-        -- Heartbeat connection is how the aura used to re-enter itself
-        if not Knife and AutoEquipGunEnabled then
-            local PackedKnife = PickKnifeFrom(LocalPlayer:FindFirstChildOfClass("Backpack"))
-            if PackedKnife then
-                pcall(function()
-                    PackedKnife.Parent = Character
-                end)
-            end
-            return
-        end
-
         local Handle = Knife and Knife:FindFirstChild("Handle")
         if not Handle then
             return
@@ -2531,9 +2518,8 @@ Setters.KnifeThrow = CreatePanelToggle(MurdererPanel, "KNIFE THROW BUTTON", 176,
     end
 end)
 
--- the murderer's own auto equip switch is gone: there is one auto equip in
--- the whole menu now, AUTO EQUIP ON SIGHT on the sheriff panel, and it
--- draws whichever weapon you are carrying the moment a target is in view.
+-- The automatic knife equip was removed. The only automatic equip in Combat
+-- belongs to the sheriff and only draws an owned revolver on direct sight.
 
 -- ---------- sheriff panel ----------
 local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 258, 180)
@@ -2750,20 +2736,15 @@ StopAutoEquipGun = function()
     end
 end
 
--- the one auto equip in the menu, so it has to cover both roles: the
--- revolver for the sheriff and the blade for the murderer
-local function WeaponToolInBackpack()
+-- This switch belongs to the sheriff panel and only draws a revolver that
+-- is already in the backpack. It never equips a knife or collects a drop.
+local function GunToolInBackpack()
     local Backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
     if not Backpack then
         return nil
     end
     return Backpack:FindFirstChild("Gun")
         or Backpack:FindFirstChild("Revolver")
-        or PickKnifeFrom(Backpack)
-end
-
-local function WeaponIsInHand()
-    return GunIsEquipped() or GetHeldKnife() ~= nil
 end
 
 local function StartAutoEquipGun()
@@ -2780,13 +2761,13 @@ local function StartAutoEquipGun()
         end
         NextEquipCheck = os.clock() + 0.2
 
-        if WeaponIsInHand() then
+        if GunIsEquipped() then
             return
         end
 
-        local PackedGun = WeaponToolInBackpack()
+        local PackedGun = GunToolInBackpack()
         if not PackedGun then
-            return -- no weapon this round, nothing to draw
+            return -- not the sheriff, or the gun is no longer owned
         end
 
         local Character = LocalPlayer.Character
@@ -2796,32 +2777,7 @@ local function StartAutoEquipGun()
             return
         end
 
-        -- a sheriff draws on the murderer, a murderer draws on the nearest
-        -- body: one switch, whichever side of the round you are on
         local _, TargetPart = FindMurdererTarget()
-
-        if not TargetPart and PickKnifeFrom(LocalPlayer:FindFirstChildOfClass("Backpack")) then
-            local ClosestDistance = nil
-            for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
-                if OtherPlayer ~= LocalPlayer then
-                    local OtherCharacter = OtherPlayer.Character
-                    local OtherTorso = OtherCharacter and (
-                        OtherCharacter:FindFirstChild("UpperTorso")
-                        or OtherCharacter:FindFirstChild("Torso")
-                        or OtherCharacter:FindFirstChild("HumanoidRootPart")
-                    )
-                    local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
-                    if OtherTorso and OtherHumanoid and OtherHumanoid.Health > 0 then
-                        local Distance = (OtherTorso.Position - RootPart.Position).Magnitude
-                        if not ClosestDistance or Distance < ClosestDistance then
-                            ClosestDistance = Distance
-                            TargetPart = OtherTorso
-                        end
-                    end
-                end
-            end
-        end
-
         if not TargetPart then
             return
         end
@@ -2842,12 +2798,12 @@ local function StartAutoEquipGun()
         end)
 
         if ShowNotification then
-            ShowNotification("AUTO EQUIP", "Target in sight, weapon drawn.", Color3.fromRGB(64, 132, 255))
+            ShowNotification("AUTO EQUIP", "Murderer in sight, revolver drawn.", Color3.fromRGB(64, 132, 255))
         end
     end)
 end
 
-Setters.AutoEquipGun = CreatePanelToggle(SheriffPanel, "AUTO EQUIP ON SIGHT", 106, function(NewState)
+Setters.AutoEquipGun = CreatePanelToggle(SheriffPanel, "AUTO EQUIP GUN ON SIGHT", 106, function(NewState)
     AutoEquipGunEnabled = NewState
     if NewState then
         StartAutoEquipGun()
@@ -2989,11 +2945,15 @@ ExtraTitle.TextXAlignment = Enum.TextXAlignment.Left
 ExtraTitle.ZIndex = 4
 ExtraTitle.Parent = PageExtra
 
--- AUTO GRAB GUN was removed in the final build. two switches were racing
--- to hand you the revolver: this one teleported you onto the drop, and the
--- sheriff panel's AUTO EQUIP ON SIGHT drew it when the murderer appeared.
--- one is enough, and the on sight version is the one that wins fights.
--- the manual GRAB GUN button on the Teleport tab is still there.
+-- Picks up a dropped revolver anywhere on the map and returns you to the
+-- exact position you were standing at. This is separate from the sheriff's
+-- on-sight equip: one collects the drop, the other only draws an owned gun.
+Setters.AutoGrabGun = CreateToggleRow(PageExtra, "AUTO GRAB GUN", 40, function(NewState)
+    AutoGrabGunEnabled = NewState
+    if NewState and TryAutoGrabGun then
+        TryAutoGrabGun()
+    end
+end)
 
 -- AUTO ESCAPE.
 -- the killer gets inside sixteen studs and you get thrown clear of him.
@@ -3170,7 +3130,7 @@ local function StartAutoEscapeLoop()
     end)
 end
 
-Setters.AutoEscape = CreateToggleRow(PageExtra, "AUTO ESCAPE", 40, function(NewState)
+Setters.AutoEscape = CreateToggleRow(PageExtra, "AUTO ESCAPE", 78, function(NewState)
     AutoEscapeEnabled = NewState
     if NewState then
         StartAutoEscapeLoop()
@@ -3183,9 +3143,9 @@ RunBuilder("AutoEscape")
 
 local ExtraBody = Instance.new("TextLabel")
 ExtraBody.Size = UDim2.new(1, -28, 0, 70)
-ExtraBody.Position = UDim2.new(0, 14, 0, 84)
+ExtraBody.Position = UDim2.new(0, 14, 0, 118)
 ExtraBody.BackgroundTransparency = 1
-ExtraBody.Text = "Auto Escape watches the killer and throws you clear the moment he closes in. It tests twelve routes and checks for solid ground first, so it never drops you inside a wall. Picking the revolver up lives on the Sheriff panel now."
+ExtraBody.Text = "Auto Grab Gun collects a dropped revolver from anywhere on the map and returns you to your previous position. Auto Escape checks twelve routes and solid ground before moving you away from the murderer."
 ExtraBody.TextColor3 = Palette.TextFaint
 ExtraBody.Font = Enum.Font.Code
 ExtraBody.TextSize = 10
@@ -3594,8 +3554,9 @@ UpdateNotes.Text = table.concat({
     "FIXED  Anti Fling walked like a snail: zero density left the",
     "       humanoid nothing to push off. mass untouched now,",
     "       upper body phases, ragdoll states off",
-    "FIXED  Auto equip no longer steals an innocent's pickup",
-    "REMOVED Two extra auto equips. one switch, on sight, both roles",
+    "FIXED  Sheriff auto equip only draws an owned revolver",
+    "EXTRA  Auto Grab Gun restored for map-wide gun pickup",
+    "COMBAT One gun equip switch, only when murderer is visible",
     "ESCAPE 35 stud trigger, twelve routes and a ground check",
     "REMOVED Role tracers, they showed nothing the chams did not",
     "UI     Window clamps on all four edges, softer transitions",
@@ -5622,7 +5583,7 @@ CollectConfigSnapshot = function()
         AimWallCheck = AimWallCheckEnabled,
         AutoEquipGun = AutoEquipGunEnabled,
         KnifeThrowButton = KnifeThrowButtonEnabled,
-
+        AutoGrabGun = AutoGrabGunEnabled,
         AutoEscape = AutoEscapeEnabled,
         FieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or DEFAULT_FIELD_OF_VIEW,
     }
@@ -5675,7 +5636,7 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("AimWallCheck", Snapshot.AimWallCheck ~= false)
     ApplyToggleFromConfig("AutoEquipGun", Snapshot.AutoEquipGun == true)
     ApplyToggleFromConfig("KnifeThrow", Snapshot.KnifeThrowButton == true)
-
+    ApplyToggleFromConfig("AutoGrabGun", Snapshot.AutoGrabGun == true)
     ApplyToggleFromConfig("AutoEscape", Snapshot.AutoEscape == true)
 end
 
