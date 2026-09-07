@@ -1,4 +1,3 @@
-
 -- Black Alibi MM2 | stable release
 -- version : 1.0.2
 -- author  : by GachiRave
@@ -475,7 +474,7 @@ local PageAuthor = CreatePage("PageAuthor")
 local PageSettings = CreatePage("PageSettings")
 
 -- pages that outgrow the short window get their own canvas height
-PageCombat.CanvasSize = UDim2.fromOffset(0, 400)
+PageCombat.CanvasSize = UDim2.fromOffset(0, 446)
 PagePlayer.CanvasSize = UDim2.fromOffset(0, 366)
 PageAuthor.CanvasSize = UDim2.fromOffset(0, 424)
 
@@ -1678,6 +1677,7 @@ local StopAimbot
 local AimWallCheckEnabled = true
 local AutoEquipGunEnabled = false
 local StopAutoEquipGun
+local AutoEquipKnifeEnabled = false
 
 
 
@@ -1820,7 +1820,7 @@ local function CreatePanelToggle(Panel, RowText, TopOffset, OnStateChanged)
 end
 
 -- ---------- murderer panel ----------
-local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 182)
+local MurdererPanel = CreateRolePanel("MURDERER", Color3.fromRGB(255, 72, 72), 34, 218)
 
 local RangeLabel = Instance.new("TextLabel")
 RangeLabel.Size = UDim2.new(1, -78, 0, 14)
@@ -2080,6 +2080,33 @@ local function StartKillAura()
 
         local Knife = GetHeldKnife()
 
+        -- AUTO EQUIP KNIFE IN RANGE.
+        -- the blade only comes out when somebody actually walks inside the
+        -- aura radius, so you are not standing around holding a knife in
+        -- front of the whole lobby. no yielding here: hand the tool over and
+        -- let the next tick pick it up, because a wait inside a Heartbeat
+        -- connection lets the aura re-enter itself.
+        if not Knife and AutoEquipKnifeEnabled then
+            local PackedKnife = PickKnifeFrom(LocalPlayer:FindFirstChildOfClass("Backpack"))
+            if PackedKnife then
+                for _, OtherPlayer in ipairs(PlayersService:GetPlayers()) do
+                    if OtherPlayer ~= LocalPlayer then
+                        local OtherCharacter = OtherPlayer.Character
+                        local OtherRoot = OtherCharacter and OtherCharacter:FindFirstChild("HumanoidRootPart")
+                        local OtherHumanoid = OtherCharacter and OtherCharacter:FindFirstChildOfClass("Humanoid")
+                        if OtherRoot and OtherHumanoid and OtherHumanoid.Health > 0
+                            and (OtherRoot.Position - RootPart.Position).Magnitude <= KillAuraRange then
+                            pcall(function()
+                                PackedKnife.Parent = Character
+                            end)
+                            break
+                        end
+                    end
+                end
+            end
+            return
+        end
+
         local Handle = Knife and Knife:FindFirstChild("Handle")
         if not Handle then
             return
@@ -2290,6 +2317,12 @@ end)
 
 KillAllButton.Activated:Connect(RunKillAll)
 
+-- draws the blade the moment somebody steps inside the aura radius above,
+-- so the knife is never out a second longer than it has to be
+Setters.AutoEquipKnife = CreatePanelToggle(MurdererPanel, "AUTO EQUIP KNIFE IN RANGE", 176, function(NewState)
+    AutoEquipKnifeEnabled = NewState
+end)
+
 -- ---------- knife throw: removed ----------
 -- it was never a throw. MM2 throws the blade from inside the tool's own
 -- LocalScript, and that script owns the aim, the charge and the projectile.
@@ -2306,7 +2339,7 @@ KillAllButton.Activated:Connect(RunKillAll)
 -- in Combat belongs to the sheriff and only draws an owned revolver.
 
 -- ---------- sheriff panel ----------
-local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 228, 146)
+local SheriffPanel = CreateRolePanel("SHERIFF", Color3.fromRGB(64, 132, 255), 264, 146)
 
 -- the aim only runs with the revolver actually in hand
 local function GunIsEquipped()
@@ -2367,8 +2400,6 @@ end
 -- sits permanently behind. the response is high enough now to actually
 -- arrive, and the last stretch snaps once the error is under a degree.
 local AIM_RENDER_STEP_NAME = "BlackAlibiPredictionAimbot"
-local AIM_RESPONSE = 55           -- fast enough to land on the target, not a hard teleport
-local AIM_SNAP_DEGREES = 1.2      -- inside this the camera is placed exactly
 local MAX_LEAD_TIME = 0.35        -- guard for a lag spike, never a working value
 local MAX_LEAD_DISTANCE = 14
 local WORLD_GRAVITY = workspace.Gravity or 196.2
@@ -2432,15 +2463,149 @@ local function GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, Ta
     return BasePosition + LeadOffset
 end
 
-StopAimbot = function()
-    AimbotEnabled = false
-    RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
+-- =====================================================================
+-- SILENT AIM. this is the part that was wrong from the very first build.
+--
+-- every version until now pointed the CAMERA at the murderer and hoped the
+-- bullet followed. it does not. MM2 does not read the camera when you fire:
+-- the gun's LocalScript resolves the shot itself and hands the server a hit
+-- position through ShootGun:InvokeServer(1, hitPosition, "AH2"). the camera
+-- is decoration. that is why it missed a target standing perfectly still,
+-- and no amount of tuning the lead was ever going to fix it.
+--
+-- so we stop aiming and start editing the shot. the namecall metamethod is
+-- hooked, and when the gun sends its hit position that argument is swapped
+-- for the murderer's torso before it leaves the client. you can be looking
+-- at the floor: the round still lands on the body.
+-- =====================================================================
+local NamecallHookInstalled = false
+local OriginalNamecall = nil
+
+-- the position argument moves around between MM2 revisions, so instead of
+-- trusting an index we replace whichever argument is a Vector3
+local function ReplaceHitArgument(Arguments, NewPosition)
+    for Index = 1, #Arguments do
+        if typeof(Arguments[Index]) == "Vector3" then
+            Arguments[Index] = NewPosition
+            return true
+        end
+        if typeof(Arguments[Index]) == "CFrame" then
+            Arguments[Index] = CFrame.new(NewPosition)
+            return true
+        end
+    end
+
+    -- some builds send a placeholder number in that slot instead
+    if #Arguments >= 2 and typeof(Arguments[2]) == "number" then
+        Arguments[2] = NewPosition
+        return true
+    end
+    return false
 end
 
-local function StartAimbot()
+local function ResolveSilentAimPosition()
+    local TargetPlayer, TargetPart, TargetRoot, TargetHumanoid = FindMurdererTarget()
+    if not TargetPlayer or not TargetPart then
+        return nil
+    end
+
+    if AimWallCheckEnabled then
+        local Character = LocalPlayer.Character
+        local RootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+        local Origin = RootPart and (RootPart.Position + Vector3.new(0, 1.5, 0))
+        if Origin and not TargetIsVisible(Origin, TargetPart) then
+            return nil
+        end
+    end
+
+    -- the shot is instant, so the only offset worth applying is the ping
+    return GetPredictedBodyPosition(TargetPlayer, TargetPart, TargetRoot, TargetHumanoid, 1 / 60)
+end
+
+local function InstallSilentAim()
+    if NamecallHookInstalled then
+        return true
+    end
+
+    local GetNamecall = getnamecallmethod
+    local CallerCheck = checkcaller
+    if type(GetNamecall) ~= "function" then
+        return false -- executor cannot tell us which method was called
+    end
+
+    local function HandleNamecall(Object, ...)
+        local Method = GetNamecall()
+
+        if AimbotEnabled
+            and (Method == "InvokeServer" or Method == "FireServer")
+            and (type(CallerCheck) ~= "function" or not CallerCheck()) then
+
+            local RemoteName = nil
+            pcall(function()
+                RemoteName = Object.Name
+            end)
+
+            if RemoteName == "ShootGun" then
+                local HitPosition = ResolveSilentAimPosition()
+                if HitPosition then
+                    local Arguments = {...}
+                    if ReplaceHitArgument(Arguments, HitPosition) then
+                        return OriginalNamecall(Object, table.unpack(Arguments))
+                    end
+                end
+            end
+        end
+
+        return OriginalNamecall(Object, ...)
+    end
+
+    -- preferred path, present on every modern executor
+    if type(hookmetamethod) == "function" then
+        local Installed = pcall(function()
+            OriginalNamecall = hookmetamethod(game, "__namecall", HandleNamecall)
+        end)
+        if Installed and OriginalNamecall then
+            NamecallHookInstalled = true
+            return true
+        end
+    end
+
+    -- older path: edit the raw metatable by hand
+    if type(getrawmetatable) == "function" then
+        local Installed = pcall(function()
+            local GameMeta = getrawmetatable(game)
+            if type(setreadonly) == "function" then
+                setreadonly(GameMeta, false)
+            elseif type(make_writeable) == "function" then
+                make_writeable(GameMeta)
+            end
+
+            OriginalNamecall = GameMeta.__namecall
+            local Wrapped = function(Object, ...)
+                return HandleNamecall(Object, ...)
+            end
+            GameMeta.__namecall = (type(newcclosure) == "function") and newcclosure(Wrapped) or Wrapped
+
+            if type(setreadonly) == "function" then
+                setreadonly(GameMeta, true)
+            end
+        end)
+        if Installed and OriginalNamecall then
+            NamecallHookInstalled = true
+            return true
+        end
+    end
+
+    return false
+end
+
+-- fallback for executors with no metatable access at all: snap the camera
+-- instantly, no smoothing. not as reliable as the hook, but on a client
+-- that cannot hook it is the only thing left.
+local function RunCameraFallback()
     RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
 
-    RunService:BindToRenderStep(AIM_RENDER_STEP_NAME, Enum.RenderPriority.Camera.Value + 1, function(DeltaTime)
+    RunService:BindToRenderStep(AIM_RENDER_STEP_NAME, Enum.RenderPriority.Camera.Value + 1, function()
         if not CoreIsAlive or not AimbotEnabled or not GunIsEquipped() then
             return
         end
@@ -2450,48 +2615,41 @@ local function StartAimbot()
             return
         end
 
-        local TargetPlayer, TargetPart, TargetRoot, TargetHumanoid = FindMurdererTarget()
-        if not TargetPlayer then
+        local HitPosition = ResolveSilentAimPosition()
+        if not HitPosition then
             return
         end
 
-        if AimWallCheckEnabled and not TargetIsVisible(ActiveCamera.CFrame.Position, TargetPart) then
-            return
-        end
-
-        local PredictedPosition = GetPredictedBodyPosition(
-            TargetPlayer,
-            TargetPart,
-            TargetRoot,
-            TargetHumanoid,
-            DeltaTime
-        )
-
-        local CameraPosition = ActiveCamera.CFrame.Position
-        local DesiredCameraCFrame = CFrame.new(CameraPosition, PredictedPosition)
-
-        -- how far off are we, in degrees? once the error is small the lerp
-        -- crawls, and that residual is exactly what makes a lock "almost"
-        -- hit a walking target. inside the snap window just place the camera.
-        local CurrentLook = ActiveCamera.CFrame.LookVector
-        local DesiredLook = (PredictedPosition - CameraPosition)
-        if DesiredLook.Magnitude < 0.01 then
-            return
-        end
-        DesiredLook = DesiredLook.Unit
-
-        local AngleError = math.deg(math.acos(math.clamp(CurrentLook:Dot(DesiredLook), -1, 1)))
-
-        if AngleError <= AIM_SNAP_DEGREES then
-            ActiveCamera.CFrame = DesiredCameraCFrame
-        else
-            local AimAlpha = 1 - math.exp(-AIM_RESPONSE * math.clamp(DeltaTime, 0, 0.1))
-            ActiveCamera.CFrame = ActiveCamera.CFrame:Lerp(DesiredCameraCFrame, AimAlpha)
-        end
+        -- placed, never lerped: the residual from a lerp is exactly what
+        -- kept the old build a few degrees short of the body
+        ActiveCamera.CFrame = CFrame.new(ActiveCamera.CFrame.Position, HitPosition)
     end)
 end
 
-Setters.Aimbot = CreatePanelToggle(SheriffPanel, "PREDICTION AIMBOT · MOBILE LOCK", 30, function(NewState)
+StopAimbot = function()
+    AimbotEnabled = false
+    RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
+    -- the hook itself stays installed and idles: it checks AimbotEnabled on
+    -- every call, and tearing a namecall hook down mid session is how you
+    -- break every other remote in the game
+end
+
+local function StartAimbot()
+    if InstallSilentAim() then
+        RunService:UnbindFromRenderStep(AIM_RENDER_STEP_NAME)
+        if ShowNotification then
+            ShowNotification("SILENT AIM", "Hooked. Fire anywhere, the shot lands on the murderer.", Color3.fromRGB(64, 132, 255))
+        end
+        return
+    end
+
+    RunCameraFallback()
+    if ShowNotification then
+        ShowNotification("AIM", "No hook support, camera lock used instead.", Color3.fromRGB(235, 180, 110))
+    end
+end
+
+Setters.Aimbot = CreatePanelToggle(SheriffPanel, "SILENT AIM · NEVER MISS", 30, function(NewState)
     AimbotEnabled = NewState
     if NewState then
         StartAimbot()
@@ -3240,11 +3398,15 @@ UpdateNotes.BackgroundTransparency = 1
 UpdateNotes.Text = table.concat({
     "NEW    Trolling Float, the fly that never flew and turned",
     "       out to be far more fun as a hover toy",
+    "AIM    Silent Aim replaces the camera lock entirely. MM2",
+    "       never read the camera: the gun sends its own hit",
+    "       position to the server. that argument is swapped for",
+    "       the murderer's torso, so a shot cannot miss",
+    "NEW    Auto Equip Knife In Range, draws the blade only when",
+    "       somebody enters the kill aura radius",
     "EXTRA  Auto Grab Gun collects a drop from across the map",
-    "SHERIFF One automatic action left: draw the revolver when",
-    "       the murderer is genuinely in sight",
-    "SHERIFF It checks your role first, so a murderer standing",
-    "       over the dead sheriff never pulls the gun out",
+    "SHERIFF Auto equip checks your role, so a murderer over the",
+    "       dead sheriff never pulls the revolver out",
     "REMOVED Auto Shoot, it duplicated the equip switch",
     "REMOVED Knife Throw, it teleported and faked the throw",
     "FIXED  Anti Fling walked like a snail: zero density left the",
@@ -5273,6 +5435,7 @@ CollectConfigSnapshot = function()
         PredictionAimbot = AimbotEnabled,
         AimWallCheck = AimWallCheckEnabled,
         AutoEquipGun = AutoEquipGunEnabled,
+        AutoEquipKnife = AutoEquipKnifeEnabled,
         AutoGrabGun = AutoGrabGunEnabled,
         AutoEscape = AutoEscapeEnabled,
         FieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or DEFAULT_FIELD_OF_VIEW,
@@ -5324,6 +5487,7 @@ ApplyConfigSnapshot = function(Snapshot)
     ApplyToggleFromConfig("Aimbot", Snapshot.PredictionAimbot == true or Snapshot.Aimbot == true)
     ApplyToggleFromConfig("AimWallCheck", Snapshot.AimWallCheck ~= false)
     ApplyToggleFromConfig("AutoEquipGun", Snapshot.AutoEquipGun == true)
+    ApplyToggleFromConfig("AutoEquipKnife", Snapshot.AutoEquipKnife == true)
     ApplyToggleFromConfig("AutoGrabGun", Snapshot.AutoGrabGun == true)
     ApplyToggleFromConfig("AutoEscape", Snapshot.AutoEscape == true)
 end
@@ -5351,6 +5515,7 @@ local function ShutdownCore()
     MyRoleHudEnabled = false
     AutoEscapeEnabled = false
     AutoEquipGunEnabled = false
+    AutoEquipKnifeEnabled = false
     TrollFloatEnabled = false
 
     StopNoclip()
