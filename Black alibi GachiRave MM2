@@ -774,6 +774,13 @@ local function Notify(TitleText, BodyText, Colour)
     end)
 end
 
+-- Show the shell before gameplay modules are built. A module error can no
+-- longer leave the entire interface transparent and make the script appear
+-- not to have started.
+SetBackdrop(true)
+Animate(Window, TweenSlow, {GroupTransparency = 0})
+Animate(WinScale, TweenSpring, {Scale = 1})
+
 -- forward declarations
 local GetRole
 local CleanupEsp
@@ -784,6 +791,7 @@ local RunGrabGun
 local TeleportTo
 local TryAutoGrab
 local AutoGrabOn = false
+local TeleStatus
 
 -- =====================================================
 -- shared combat helpers
@@ -1028,6 +1036,9 @@ RoundLabel.Parent = PageEsp
 -- =====================================================
 -- PLAYER
 -- =====================================================
+local Cleanups = {}
+
+do
 local DEF_SPEED = 16
 local DEF_JUMP = 50
 local DEF_FOV = 70
@@ -1289,9 +1300,27 @@ do
     if Existing then Bind(Existing) end
 end
 
+Cleanups.Player = function()
+    NoclipOn = false
+    InfJumpOn = false
+    AntiFlingOn = false
+    if StopNoclip then StopNoclip() end
+    if StopAntiFling then StopAntiFling() end
+
+    local H = LocalHumanoid()
+    if H then
+        H.WalkSpeed = DEF_SPEED
+        H.JumpPower = DEF_JUMP
+    end
+    local Cam = workspace.CurrentCamera
+    if Cam then Cam.FieldOfView = DEF_FOV end
+end
+end
+
 -- =====================================================
 -- COMBAT
 -- =====================================================
+do
 local KillAuraOn = false
 local LegitOn = true
 local AuraRange = 12
@@ -1935,11 +1964,18 @@ do
     N.Parent = SherPanel
 end
 
+Cleanups.Combat = function()
+    for _, Name in ipairs({"KillAura", "AutoKnife", "ThrowFab", "SheriffFirst", "SilentAim"}) do
+        local Setter = Setters[Name]
+        if Setter then pcall(Setter, false) end
+    end
+end
+end
+
 -- =====================================================
 -- TELEPORT
 -- =====================================================
-local TeleStatus
-
+do
 Title(PageTele, "Телепорт")
 
 do
@@ -2091,10 +2127,12 @@ do
 end
 
 Note(PageTele, "Ролевые прыжки ставят на дистанции за спиной цели.", 236, 26)
+end
 
 -- =====================================================
 -- EXTRA
 -- =====================================================
+do
 Title(PageExtra, "Экстра")
 
 Setters.AutoGrab = ToggleRow(PageExtra, "АВТО ПОДБОР РЕВОЛЬВЕРА", 38, function(S)
@@ -2301,6 +2339,14 @@ do
 end
 
 Note(PageExtra, "Хитбоксы увеличивают HumanoidRootPart противников, попадать ножом и пулей проще. Размер меняется на лету.", 196, 40)
+
+Cleanups.Extra = function()
+    for _, Name in ipairs({"AutoGrab", "Escape", "Hitbox"}) do
+        local Setter = Setters[Name]
+        if Setter then pcall(Setter, false) end
+    end
+end
+end
 
 -- =====================================================
 -- AUTHOR
@@ -2519,6 +2565,7 @@ end
 -- =====================================================
 -- MINIMISE
 -- =====================================================
+do
 local Bar = Instance.new("CanvasGroup")
 Bar.AnchorPoint = Vector2.new(0.5, 0)
 Bar.Position = UDim2.new(0.5, 0, 0, 18)
@@ -2743,34 +2790,16 @@ local function Shutdown()
     if not Alive then return end
     Alive = false
 
-    KillAuraOn = false
-    SilentAimOn = false
-    ThrowFabOn = false
     XRayOn = false
-    NoclipOn = false
-    InfJumpOn = false
-    AntiFlingOn = false
-    EscapeOn = false
-    HitboxOn = false
     AutoGrabOn = false
     HighlightOn = false
     NameTagsOn = false
 
-    if StopAura then StopAura() end
-    if StopXRay then StopXRay() end
-    if StopNoclip then StopNoclip() end
-    if StopAntiFling then StopAntiFling() end
-    if StopEscape then StopEscape() end
-    if StopHitbox then StopHitbox() end
-    if CleanupEsp then CleanupEsp() end
-
-    local H = LocalHumanoid()
-    if H then
-        H.WalkSpeed = DEF_SPEED
-        H.JumpPower = DEF_JUMP
+    for _, Cleanup in pairs(Cleanups) do
+        pcall(Cleanup)
     end
-    local Cam = workspace.CurrentCamera
-    if Cam then Cam.FieldOfView = DEF_FOV end
+    if StopXRay then StopXRay() end
+    if CleanupEsp then CleanupEsp() end
 
     TweenService:Create(Blur, TweenFast, {Size = 0}):Play()
     TweenService:Create(DimLayer, TweenFast, {BackgroundTransparency = 1}):Play()
@@ -2841,6 +2870,7 @@ UserInputService.InputBegan:Connect(function(Input, TypedInChat)
         ToggleWindow()
     end
 end)
+end
 
 -- =====================================================
 -- ROLE ENGINE
@@ -3685,10 +3715,6 @@ end
 -- =====================================================
 -- BOOT
 -- =====================================================
-SetBackdrop(true)
-Animate(Window, TweenSlow, {GroupTransparency = 0})
-Animate(WinScale, TweenSpring, {Scale = 1})
-
 task.spawn(function()
     if StartRoleEngine then StartRoleEngine() end
 end)
